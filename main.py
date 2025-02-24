@@ -1,14 +1,8 @@
 import streamlit as st
 import requests
 import pandas as pd
-from tqdm import tqdm
 import time
 import datetime
-import os
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 def get_unixtime_from_datetime(dt):
     """Converts a datetime object to UNIX time."""
@@ -86,29 +80,37 @@ def main():
     st.title("VK News and Comments Scraper")
 
     # Input fields
-    access_token = os.getenv("VK_ACCESS_TOKEN") or st.text_input("Enter your VK API access token", type="password")
+    access_token = st.text_input("Enter your VK API access token", type="password")
     query = st.text_input("Enter keyword or expression")
     start_date = st.date_input("Start date")
     end_date = st.date_input("End date")
     include_comments = st.checkbox("Include comments")
 
     if st.button("Start Fetching"):
-        if (end_date - start_date).days < 1:
-            st.error("The minimum period should be at least 1 day.")
+        if not access_token:
+            st.error("Please enter a VK API access token.")
+        elif not query:
+            st.error("Please enter a keyword or expression.")
+        elif end_date < start_date:
+            st.error("End date must be after start date.")
         else:
             progress_bar = st.progress(0)
             data = get_vk_newsfeed(query, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), 
                                    access_token, include_comments, progress_bar)
             
-            st.dataframe(data)
-            
-            csv = data.to_csv(index=False)
-            st.download_button(
-                label="Download data as CSV",
-                data=csv,
-                file_name="vk_data.csv",
-                mime="text/csv",
-            )
+            if not data.empty:
+                st.success(f"Fetched {len(data)} posts.")
+                st.dataframe(data)
+                
+                csv = data.to_csv(index=False)
+                st.download_button(
+                    label="Download data as CSV",
+                    data=csv,
+                    file_name="vk_data.csv",
+                    mime="text/csv",
+                )
+            else:
+                st.warning("No data was fetched. Try adjusting your search parameters.")
 
 if __name__ == "__main__":
     main()
