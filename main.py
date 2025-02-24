@@ -1,74 +1,93 @@
 import streamlit as st
+import requests
 import pandas as pd
+from tqdm import tqdm
 import time
-from datetime import datetime, timedelta
-import vk_api
-from dotenv import load_dotenv
+import datetime
 import os
-import asyncio
-import aiohttp
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
-async def fetch_vk_data(api_key, keyword, start_date, end_date, include_comments, progress_bar):
-    vk_session = vk_api.VkApi(token=api_key)
-    vk = vk_session.get_api()
-    
-    all_posts = []
-    current_date = start_date
-    
-    async with aiohttp.ClientSession() as session:
-        while current_date <= end_date:
-            try:
-                # Fetch posts for the current date
-                posts = await asyncio.to_thread(
-                    vk.wall.search,
-                    query=keyword,
-                    count=100,
-                    start_time=int(current_date.timestamp()),
-                    end_time=int((current_date + timedelta(days=1)).timestamp())
-                )
-                
-                for post in posts['items']:
-                    post_data = {
-                        'id': post['id'],
-                        'text': post['text'],
-                        'likes': post['likes']['count'],
-                        'views': post.get('views', {}).get('count', 0),
-                        'reposts': post['reposts']['count'],
-                        'date': datetime.fromtimestamp(post['date']),
-                    }
-                    
+def get_unixtime_from_datetime(dt):
+    """Converts a datetime object to UNIX time."""
+    return int(time.mktime(dt.timetuple()))
+
+def get_comments(post_id, owner_id, access_token):
+    """Gets comments for a post."""
+    url = (
+        f"https://api.vk.com/method/wall.getComments?"
+        f"owner_id={owner_id}&post_id={post_id}&access_token={access_token}&v=5.131"
+    )
+    try:
+        res = requests.get(url)
+        json_text = res.json()
+        if 'response' in json_text:
+            return json_text['response']['items']
+        else:
+            return []
+    except Exception as e:
+        st.error(f"Error getting comments: {e}")
+        return []
+
+def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments, progress_bar):
+    df = pd.DataFrame()
+    count = "200"
+
+    start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d").date()
+    end_time = datetime.datetime.strptime(end_time, "%Y-%m-%d").date()
+
+    delta = datetime.timedelta(days=1)
+    current_date = start_time
+
+    n_days = int((end_time - start_time).days) + 1
+
+    for _ in range(n_days):
+        url = (
+            f"https://api.vk.com/method/newsfeed.search?q={query}"
+            f"&count={count}"
+            f"&access_token={access_token}"
+            f"&start_time={get_unixtime_from_datetime(current_date)}"
+            f"&end_time={get_unixtime_from_datetime(current_date + delta)}"
+            f"&v=5.131"
+        )
+
+        try:
+            res = requests.get(url)
+            json_text = res.json()
+
+            if 'response' in json_text and 'items' in json_text['response']:
+                for item in json_text['response']['items']:
+                    post_id = item['id']
+                    owner_id = item['owner_id']
+
                     if include_comments:
-                        comments = await asyncio.to_thread(
-                            vk.wall.getComments,
-                            post_id=post['id'],
-                            count=100
-                        )
-                        post_data['comments'] = comments['items']
-                        post_data['comment_count'] = comments['count']
-                    
-                    all_posts.append(post_data)
-                
-                current_date += timedelta(days=1)
-                progress_bar.progress((current_date - start_date).days / (end_date - start_date).days)
-                await asyncio.sleep(0.5)  # Add delay to avoid rate limiting
-            
-            except vk_api.exceptions.ApiError as e:
-                st.error(f"VK API Error: {str(e)}")
-                break
-            except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
-                break
-    
-    return pd.DataFrame(all_posts)
+                        comments = get_comments(post_id, owner_id, access_token)
+                        item['comments'] = comments
+
+                items_df = pd.json_normalize(json_text['response']['items'], sep='_')
+                df = pd.concat([df, items_df], ignore_index=True)
+
+            else:
+                st.warning(f"No data in response for date {current_date}")
+
+        except Exception as e:
+            st.error(f"Error executing request: {e}")
+
+        progress_bar.progress((current_date - start_time).days / n_days)
+        time.sleep(0.5)  # Delay between requests
+        current_date += delta
+
+    df.fillna('', inplace=True)
+    return df
 
 def main():
-    st.title("VK News and Comments Fetcher")
+    st.title("VK News and Comments Scraper")
 
-    api_key = os.getenv("VK_API_KEY") or st.text_input("Enter your VK API key", type="password")
-    keyword = st.text_input("Enter keyword or expression")
+    # Input fields
+    access_token = os.getenv("VK_ACCESS_TOKEN") or st.text_input("Enter your VK API access token", type="password")
+    query = st.text_input("Enter keyword or expression")
     start_date = st.date_input("Start date")
     end_date = st.date_input("End date")
     include_comments = st.checkbox("Include comments")
@@ -78,20 +97,18 @@ def main():
             st.error("The minimum period should be at least 1 day.")
         else:
             progress_bar = st.progress(0)
-            data = asyncio.run(fetch_vk_data(api_key, keyword, start_date, end_date, include_comments, progress_bar))
+            data = get_vk_newsfeed(query, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), 
+                                   access_token, include_comments, progress_bar)
             
-            if not data.empty:
-                st.dataframe(data)
-                
-                csv = data.to_csv(index=False)
-                st.download_button(
-                    label="Download data as CSV",
-                    data=csv,
-                    file_name="vk_data.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.warning("No data was fetched. Please check your inputs and try again.")
+            st.dataframe(data)
+            
+            csv = data.to_csv(index=False)
+            st.download_button(
+                label="Download data as CSV",
+                data=csv,
+                file_name="vk_data.csv",
+                mime="text/csv",
+            )
 
 if __name__ == "__main__":
     main()
