@@ -23,23 +23,18 @@ def get_comments(post_id, owner_id, access_token):
         st.error(f"Error fetching comments: {e}")
         return []
 
-def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments, progress_bar, time_sleep):
+def get_vk_newsfeed(query, start_datetime, end_datetime, access_token, include_comments, progress_bar, time_sleep):
     df = pd.DataFrame()
     all_comments = []
     count = "200"
 
-    start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d").date()
-    end_time = datetime.datetime.strptime(end_time, "%Y-%m-%d").date()
-
     delta = datetime.timedelta(days=1)
-    current_time = start_time
+    current_time = start_datetime
 
-    n_days = int((end_time - start_time).days) + 1
-    total_requests = n_days * 24  # Assuming one request per hour
+    total_seconds = (end_datetime - start_datetime).total_seconds()
+    start_time = time.time()
 
-    request_count = 0
-
-    while current_time <= end_time:
+    while current_time <= end_datetime:
         url = (
             f"https://api.vk.com/method/newsfeed.search?q={query}"
             f"&count={count}"
@@ -74,8 +69,8 @@ def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments,
         except Exception as e:
             st.error(f"Error executing request: {e}")
 
-        request_count += 1
-        progress = min(request_count / total_requests, 1.0)
+        elapsed_time = time.time() - start_time
+        progress = min(elapsed_time / total_seconds, 1.0)
         progress_bar.progress(progress)
 
         time.sleep(time_sleep)
@@ -89,17 +84,27 @@ def main():
 
     access_token = st.text_input("Enter your VK API access token:", type="password")
     query = st.text_input("Enter keyword or expression:")
-    start_date = st.date_input("Start date:")
-    end_date = st.date_input("End date:")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start date:")
+        start_time = st.time_input("Start time:")
+    with col2:
+        end_date = st.date_input("End date:")
+        end_time = st.time_input("End time:")
+    
+    start_datetime = datetime.datetime.combine(start_date, start_time)
+    end_datetime = datetime.datetime.combine(end_date, end_time)
+    
     include_comments = st.checkbox("Include comments", value=True)
-    time_sleep = st.slider("Time sleep between requests (seconds)", min_value=0.1, max_value=5.0, value=0.5, step=0.1)
+    time_sleep = st.slider("Time sleep between requests (seconds)", min_value=0.1, max_value=6.0, value=0.5, step=0.1)
 
     if st.button("Start Parsing"):
         if not access_token or not query or not start_date or not end_date:
             st.error("Please fill in all fields.")
             return
 
-        if (end_date - start_date).days < 1:
+        if (end_datetime - start_datetime).total_seconds() < 86400:  # 86400 seconds in a day
             st.error("The minimum parsing period should be at least 1 day.")
             return
 
@@ -107,7 +112,7 @@ def main():
         status_text = st.empty()
 
         status_text.text("Parsing in progress...")
-        df, comments_df = get_vk_newsfeed(query, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), 
+        df, comments_df = get_vk_newsfeed(query, start_datetime, end_datetime, 
                                           access_token, include_comments, progress_bar, time_sleep)
         status_text.text("Parsing completed!")
 
@@ -115,17 +120,18 @@ def main():
             # Convert Unix timestamp to readable date
             df['date'] = pd.to_datetime(df['date'], unit='s')
 
+            # Store the full dataset in session state
+            st.session_state.full_df = df
+            st.session_state.comments_df = comments_df
+
             # Allow user to select columns after data is loaded
             all_columns = df.columns.tolist()
-            selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns)
-
-            # Filter columns
-            df_display = df[selected_columns]
+            selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns, key='selected_columns')
 
             st.subheader("Posts")
-            st.write(df_display)
+            st.write(st.session_state.full_df[selected_columns])
 
-            csv = df_display.to_csv(index=False).encode('utf-8')
+            csv = st.session_state.full_df[selected_columns].to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="Download Posts CSV",
                 data=csv,
@@ -138,10 +144,10 @@ def main():
                 display_comments = st.checkbox("Display comments table", value=False)
                 
                 if display_comments:
-                    comments_df['date'] = pd.to_datetime(comments_df['date'], unit='s')
-                    st.write(comments_df)
+                    st.session_state.comments_df['date'] = pd.to_datetime(st.session_state.comments_df['date'], unit='s')
+                    st.write(st.session_state.comments_df)
 
-                    comments_csv = comments_df.to_csv(index=False).encode('utf-8')
+                    comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="Download Comments CSV",
                         data=comments_csv,
