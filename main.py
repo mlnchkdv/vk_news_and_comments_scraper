@@ -15,7 +15,7 @@ def get_comments(post_id, owner_id, access_token):
     try:
         res = requests.get(url)
         json_text = res.json()
-        if 'response' in json_text:
+        if 'response' in json_text and 'items' in json_text['response']:
             return json_text['response']['items']
         else:
             return []
@@ -25,6 +25,7 @@ def get_comments(post_id, owner_id, access_token):
 
 def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments, progress_bar, time_sleep):
     df = pd.DataFrame()
+    all_comments = []
     count = "200"
 
     start_time = datetime.datetime.strptime(start_time, "%Y-%m-%d").date()
@@ -58,7 +59,11 @@ def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments,
                         post_id = item['id']
                         owner_id = item['owner_id']
                         comments = get_comments(post_id, owner_id, access_token)
-                        item['comments'] = comments
+                        if comments:
+                            for comment in comments:
+                                comment['post_id'] = post_id
+                                comment['post_owner_id'] = owner_id
+                            all_comments.extend(comments)
 
                 items_df = pd.json_normalize(json_text['response']['items'], sep='_')
                 df = pd.concat([df, items_df], ignore_index=True)
@@ -76,7 +81,8 @@ def get_vk_newsfeed(query, start_time, end_time, access_token, include_comments,
         time.sleep(time_sleep)
         current_time += delta
 
-    return df
+    comments_df = pd.DataFrame(all_comments) if all_comments else pd.DataFrame()
+    return df, comments_df
 
 def main():
     st.title("VK News and Comments Parser")
@@ -87,19 +93,6 @@ def main():
     end_date = st.date_input("End date:")
     include_comments = st.checkbox("Include comments", value=True)
     time_sleep = st.slider("Time sleep between requests (seconds)", min_value=0.1, max_value=5.0, value=0.5, step=0.1)
-
-    columns = [
-        'attachments', 'date', 'from_id', 'id', 'owner_id', 'text', 'track_code', 'comments_count', 
-        'likes_count', 'post_source_platform', 'post_source_type', 'reposts_count', 'views_count', 
-        'donut_miniapp_url', 'signer_id', 'geo_coordinates', 'geo_place_discriminator', 'geo_place_created', 
-        'geo_place_id', 'geo_place_is_deleted', 'geo_place_latitude', 'geo_place_longitude', 'geo_place_title', 
-        'geo_place_total_checkins', 'geo_place_updated', 'geo_place_country', 'geo_place_category', 
-        'geo_place_category_object_id', 'geo_place_category_object_title', 'geo_place_category_object_icons', 
-        'geo_type', 'copyright_link', 'copyright_name', 'copyright_type', 'copyright_id', 'edited', 
-        'geo_place_address', 'author_ad_advertiser_info_url', 'author_ad_ad_marker'
-    ]
-
-    selected_columns = st.multiselect("Select columns to save in CSV", columns, default=columns)
 
     if st.button("Start Parsing"):
         if not access_token or not query or not start_date or not end_date:
@@ -114,37 +107,47 @@ def main():
         status_text = st.empty()
 
         status_text.text("Parsing in progress...")
-        df = get_vk_newsfeed(query, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), 
-                             access_token, include_comments, progress_bar, time_sleep)
+        df, comments_df = get_vk_newsfeed(query, start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"), 
+                                          access_token, include_comments, progress_bar, time_sleep)
         status_text.text("Parsing completed!")
 
         if not df.empty:
             # Convert Unix timestamp to readable date
             df['date'] = pd.to_datetime(df['date'], unit='s')
 
+            # Allow user to select columns after data is loaded
+            all_columns = df.columns.tolist()
+            selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns)
+
             # Filter columns
-            df = df[[col for col in selected_columns if col in df.columns]]
+            df_display = df[selected_columns]
 
-            st.write(df)
+            st.subheader("Posts")
+            st.write(df_display)
 
-            csv = df.to_csv(index=False).encode('utf-8')
+            csv = df_display.to_csv(index=False).encode('utf-8')
             st.download_button(
-                label="Download CSV",
+                label="Download Posts CSV",
                 data=csv,
-                file_name="vk_newsfeed.csv",
+                file_name="vk_posts.csv",
                 mime="text/csv",
             )
 
-            if include_comments:
+            if include_comments and not comments_df.empty:
                 st.subheader("Comments")
-                for _, row in df.iterrows():
-                    st.write(f"Post ID: {row['id']}")
-                    if 'comments' in row and row['comments']:
-                        comments_df = pd.DataFrame(row['comments'])
-                        st.write(comments_df)
-                    else:
-                        st.write("No comments for this post.")
-                    st.write("---")
+                display_comments = st.checkbox("Display comments table", value=False)
+                
+                if display_comments:
+                    comments_df['date'] = pd.to_datetime(comments_df['date'], unit='s')
+                    st.write(comments_df)
+
+                    comments_csv = comments_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download Comments CSV",
+                        data=comments_csv,
+                        file_name="vk_comments.csv",
+                        mime="text/csv",
+                    )
         else:
             st.warning("No data found for the given parameters.")
 
