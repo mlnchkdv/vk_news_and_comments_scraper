@@ -80,16 +80,21 @@ def get_vk_newsfeed(query, start_datetime, end_datetime, access_token, include_c
     return df, comments_df
 
 def display_post_with_comments(post, comments):
-    st.write(f"**Post ID:** {post['id']}")
-    st.write(f"**Date:** {post['date']}")
-    st.write(f"**Text:** {post['text']}")
-    st.write(f"**Likes:** {post.get('likes_count', 'N/A')}")
-    st.write(f"**Views:** {post.get('views_count', 'N/A')}")
-    st.write(f"**Reposts:** {post.get('reposts_count', 'N/A')}")
-    st.write("**Comments:**")
+    st.markdown(f"### Post ID: {post['id']}")
+    st.markdown(f"**Date:** {post['date'].strftime('%Y-%m-%d %H:%M:%S')}")
+    st.markdown(f"**Text:** {post['text']}")
+    st.markdown(f"**Likes:** {post.get('likes_count', 'N/A')} | **Views:** {post.get('views_count', 'N/A')} | **Reposts:** {post.get('reposts_count', 'N/A')}")
+    
+    st.markdown("#### Comments:")
     for comment in comments:
-        st.text(f"{comment['from_id']} ({comment['date']}): {comment['text']}")
-    st.write("---")
+        st.markdown(f"""
+        ---
+        **User ID:** {comment['from_id']}
+        **Date:** {pd.to_datetime(comment['date'], unit='s').strftime('%Y-%m-%d %H:%M:%S')}
+        
+        {comment['text']}
+        """)
+    st.markdown("---")
 
 def main():
     st.title("VK News and Comments Parser")
@@ -154,9 +159,9 @@ def main():
         st.session_state.start_parsing = False
 
     if st.session_state.full_df is not None:
-        # Allow user to select columns after data is loaded
+        # Allow user to select columns for posts after data is loaded
         all_columns = st.session_state.full_df.columns.tolist()
-        selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns, key='selected_columns')
+        selected_columns = st.multiselect("Select columns to display and save for posts", all_columns, default=all_columns, key='selected_columns_posts')
 
         st.subheader("Posts")
         st.write(st.session_state.full_df[selected_columns])
@@ -174,9 +179,16 @@ def main():
             display_option = st.radio("Choose display option", ["Table view", "Post view"])
             
             if display_option == "Table view":
-                st.write(st.session_state.comments_df)
+                # Convert Unix timestamp to readable date for comments
+                st.session_state.comments_df['date'] = pd.to_datetime(st.session_state.comments_df['date'], unit='s')
+                
+                # Allow user to select columns for comments
+                all_comment_columns = st.session_state.comments_df.columns.tolist()
+                selected_comment_columns = st.multiselect("Select columns to display and save for comments", all_comment_columns, default=all_comment_columns, key='selected_columns_comments')
+                
+                st.write(st.session_state.comments_df[selected_comment_columns])
 
-                comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
+                comments_csv = st.session_state.comments_df[selected_comment_columns].to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="Download Comments CSV",
                     data=comments_csv,
