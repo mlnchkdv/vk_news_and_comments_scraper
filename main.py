@@ -117,8 +117,13 @@ def main():
         st.session_state.full_df = None
     if 'comments_df' not in st.session_state:
         st.session_state.comments_df = None
+    if 'start_parsing' not in st.session_state:
+        st.session_state.start_parsing = False
 
     if st.button("Start Parsing"):
+        st.session_state.start_parsing = True
+
+    if st.session_state.start_parsing:
         if not access_token or not query or not start_date or not end_date:
             st.error("Please fill in all fields.")
             return
@@ -142,6 +147,11 @@ def main():
             # Store the full dataset in session state
             st.session_state.full_df = df
             st.session_state.comments_df = comments_df
+        else:
+            st.warning("No data found for the given parameters.")
+
+        # Reset the start_parsing flag
+        st.session_state.start_parsing = False
 
     if st.session_state.full_df is not None:
         # Allow user to select columns after data is loaded
@@ -196,9 +206,6 @@ def main():
                 # Display posts with comments
                 for _, post in posts_with_comments.head(top_n).iterrows():
                     display_post_with_comments(post, post['comments'])
-
-    elif st.session_state.full_df is None and 'Start Parsing' in st.session_state.button_clicked:
-        st.warning("No data found for the given parameters.")
 
 if __name__ == "__main__":
     main()
