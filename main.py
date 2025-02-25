@@ -85,12 +85,14 @@ def main():
     access_token = st.text_input("Enter your VK API access token:", type="password")
     query = st.text_input("Enter keyword or expression:")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         start_date = st.date_input("Start date:")
-        start_time = st.time_input("Start time:")
     with col2:
+        start_time = st.time_input("Start time:")
+    with col3:
         end_date = st.date_input("End date:")
+    with col4:
         end_time = st.time_input("End time:")
     
     start_datetime = datetime.datetime.combine(start_date, start_time)
@@ -98,6 +100,11 @@ def main():
     
     include_comments = st.checkbox("Include comments", value=True)
     time_sleep = st.slider("Time sleep between requests (seconds)", min_value=0.1, max_value=6.0, value=0.5, step=0.1)
+
+    if 'full_df' not in st.session_state:
+        st.session_state.full_df = None
+    if 'comments_df' not in st.session_state:
+        st.session_state.comments_df = None
 
     if st.button("Start Parsing"):
         if not access_token or not query or not start_date or not end_date:
@@ -124,38 +131,39 @@ def main():
             st.session_state.full_df = df
             st.session_state.comments_df = comments_df
 
-            # Allow user to select columns after data is loaded
-            all_columns = df.columns.tolist()
-            selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns, key='selected_columns')
+    if st.session_state.full_df is not None:
+        # Allow user to select columns after data is loaded
+        all_columns = st.session_state.full_df.columns.tolist()
+        selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns, key='selected_columns')
 
-            st.subheader("Posts")
-            st.write(st.session_state.full_df[selected_columns])
+        st.subheader("Posts")
+        st.write(st.session_state.full_df[selected_columns])
 
-            csv = st.session_state.full_df[selected_columns].to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="Download Posts CSV",
-                data=csv,
-                file_name="vk_posts.csv",
-                mime="text/csv",
-            )
+        csv = st.session_state.full_df[selected_columns].to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="Download Posts CSV",
+            data=csv,
+            file_name="vk_posts.csv",
+            mime="text/csv",
+        )
 
-            if include_comments and not comments_df.empty:
-                st.subheader("Comments")
-                display_comments = st.checkbox("Display comments table", value=False)
-                
-                if display_comments:
-                    st.session_state.comments_df['date'] = pd.to_datetime(st.session_state.comments_df['date'], unit='s')
-                    st.write(st.session_state.comments_df)
+        if include_comments and not st.session_state.comments_df.empty:
+            st.subheader("Comments")
+            display_comments = st.checkbox("Display comments table", value=False)
+            
+            if display_comments:
+                st.session_state.comments_df['date'] = pd.to_datetime(st.session_state.comments_df['date'], unit='s')
+                st.write(st.session_state.comments_df)
 
-                    comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download Comments CSV",
-                        data=comments_csv,
-                        file_name="vk_comments.csv",
-                        mime="text/csv",
-                    )
-        else:
-            st.warning("No data found for the given parameters.")
+                comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="Download Comments CSV",
+                    data=comments_csv,
+                    file_name="vk_comments.csv",
+                    mime="text/csv",
+                )
+    elif st.session_state.full_df is None and 'Start Parsing' in st.session_state.button_clicked:
+        st.warning("No data found for the given parameters.")
 
 if __name__ == "__main__":
     main()
