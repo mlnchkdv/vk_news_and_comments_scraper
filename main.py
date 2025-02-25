@@ -79,6 +79,18 @@ def get_vk_newsfeed(query, start_datetime, end_datetime, access_token, include_c
     comments_df = pd.DataFrame(all_comments) if all_comments else pd.DataFrame()
     return df, comments_df
 
+def display_post_with_comments(post, comments):
+    st.write(f"**Post ID:** {post['id']}")
+    st.write(f"**Date:** {post['date']}")
+    st.write(f"**Text:** {post['text']}")
+    st.write(f"**Likes:** {post.get('likes_count', 'N/A')}")
+    st.write(f"**Views:** {post.get('views_count', 'N/A')}")
+    st.write(f"**Reposts:** {post.get('reposts_count', 'N/A')}")
+    st.write("**Comments:**")
+    for comment in comments:
+        st.text(f"{comment['from_id']} ({comment['date']}): {comment['text']}")
+    st.write("---")
+
 def main():
     st.title("VK News and Comments Parser")
 
@@ -149,10 +161,9 @@ def main():
 
         if include_comments and not st.session_state.comments_df.empty:
             st.subheader("Comments")
-            display_comments = st.checkbox("Display comments table", value=False)
+            display_option = st.radio("Choose display option", ["Table view", "Post view"])
             
-            if display_comments:
-                st.session_state.comments_df['date'] = pd.to_datetime(st.session_state.comments_df['date'], unit='s')
+            if display_option == "Table view":
                 st.write(st.session_state.comments_df)
 
                 comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
@@ -162,6 +173,30 @@ def main():
                     file_name="vk_comments.csv",
                     mime="text/csv",
                 )
+            else:  # Post view
+                # Prepare data for post view
+                posts_with_comments = st.session_state.full_df.copy()
+                posts_with_comments['comments'] = posts_with_comments['id'].apply(
+                    lambda x: st.session_state.comments_df[st.session_state.comments_df['post_id'] == x].to_dict('records')
+                )
+                posts_with_comments['comment_count'] = posts_with_comments['comments'].apply(len)
+
+                # Sorting options
+                sort_option = st.selectbox("Sort posts by", ["Most commented", "Newest", "Oldest"])
+                if sort_option == "Most commented":
+                    posts_with_comments = posts_with_comments.sort_values('comment_count', ascending=False)
+                elif sort_option == "Newest":
+                    posts_with_comments = posts_with_comments.sort_values('date', ascending=False)
+                else:  # Oldest
+                    posts_with_comments = posts_with_comments.sort_values('date')
+
+                # Number of top posts to display
+                top_n = st.slider("Number of top posts to display", min_value=1, max_value=len(posts_with_comments), value=5)
+
+                # Display posts with comments
+                for _, post in posts_with_comments.head(top_n).iterrows():
+                    display_post_with_comments(post, post['comments'])
+
     elif st.session_state.full_df is None and 'Start Parsing' in st.session_state.button_clicked:
         st.warning("No data found for the given parameters.")
 
