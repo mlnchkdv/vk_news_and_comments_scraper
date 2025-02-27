@@ -52,19 +52,21 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
 
                 if 'response' in json_text and 'items' in json_text['response']:
                     for item in json_text['response']['items']:
-                        item['matched_query'] = query
-                        if include_comments:
-                            post_id = item['id']
-                            owner_id = item['owner_id']
-                            comments = get_comments(post_id, owner_id, access_token)
-                            if comments:
-                                for comment in comments:
-                                    comment['post_id'] = post_id
-                                    comment['post_owner_id'] = owner_id
-                                all_comments.extend(comments)
+                        # Check if the exact query is in the post text
+                        if re.search(r'\b' + re.escape(query) + r'\b', item['text'], re.IGNORECASE):
+                            item['matched_query'] = query
+                            if include_comments:
+                                post_id = item['id']
+                                owner_id = item['owner_id']
+                                comments = get_comments(post_id, owner_id, access_token)
+                                if comments:
+                                    for comment in comments:
+                                        comment['post_id'] = post_id
+                                        comment['post_owner_id'] = owner_id
+                                    all_comments.extend(comments)
 
-                    items_df = pd.json_normalize(json_text['response']['items'], sep='_')
-                    df = pd.concat([df, items_df], ignore_index=True)
+                            items_df = pd.DataFrame([item])
+                            df = pd.concat([df, items_df], ignore_index=True)
 
                 else:
                     st.warning(f"No data in response for {query} at {current_time}")
@@ -104,7 +106,7 @@ def main():
             "description": "This application allows you to search for posts and comments on VK (VKontakte) using keywords or phrases. You can specify the time period, include comments, and view the results in various formats.",
             "token_instruction": "How to get VK API access token",
             "token_input": "Enter your VK API access token:",
-            "queries_instruction": "Enter your search queries. Each query should be on a new line. You can use exact phrases or individual words.",
+            "queries_instruction": "Enter your search queries. Each query should be on a new line. The search will find posts containing the exact phrases you enter.",
             "queries_input": "Enter keywords or expressions (one per line):",
             "start_date": "Start date:",
             "start_time": "Start time:",
@@ -124,13 +126,23 @@ def main():
             "newest": "Newest",
             "oldest": "Oldest",
             "top_posts": "Number of top posts to display",
+            "token_instructions": """
+            To generate an `access token`:
+            1. Go to https://vkhost.github.io/
+            2. Click on `Settings »`
+            3. Select `Wall` and `Access at any time`
+            4. Click on the `Get` button
+            5. Confirm access to your account by clicking `Allow`
+            6. In the resulting URL, find the part between `access_token=` and `&expires_in=`
+            7. Copy this token and paste it in the field below
+            """
         },
         "Русский": {
             "title": "Парсер новостей и комментариев ВКонтакте",
             "description": "Это приложение позволяет искать посты и комментарии во ВКонтакте, используя ключевые слова или фразы. Вы можете указать временной период, включить комментарии и просматривать результаты в различных форматах.",
             "token_instruction": "Как получить токен доступа VK API",
             "token_input": "Введите ваш токен доступа VK API:",
-            "queries_instruction": "Введите ваши поисковые запросы. Каждый запрос должен быть на новой строке. Вы можете использовать точные фразы или отдельные слова.",
+            "queries_instruction": "Введите ваши поисковые запросы. Каждый запрос должен быть на новой строке. Поиск будет находить посты, содержащие точные фразы, которые вы вводите.",
             "queries_input": "Введите ключевые слова или выражения (по одному на строку):",
             "start_date": "Дата начала:",
             "start_time": "Время начала:",
@@ -150,6 +162,16 @@ def main():
             "newest": "Новейшие",
             "oldest": "Старейшие",
             "top_posts": "Количество отображаемых топ-постов",
+            "token_instructions": """
+            Для генерации `access token` необходимо:
+            1. Перейти на сайт https://vkhost.github.io/
+            2. Нажать на `Настройки »`
+            3. Выбрать пункты `Стена` и `Доступ в любое время`
+            4. Нажать на кнопку `Получить`
+            5. Подтвердить доступ к вашему аккаунту, нажав `Разрешить`
+            6. В появившемся URL найдите часть между `access_token=` и `&expires_in=`
+            7. Скопируйте этот токен и вставьте его в поле ниже
+            """
         }
     }
 
@@ -159,23 +181,7 @@ def main():
     st.write(t["description"])
 
     with st.expander(t["token_instruction"]):
-        st.markdown("""
-        Для генерации `access token` необходимо:
-        1. Перейти на сайт https://vkhost.github.io/
-        2. Нажать на `Настройки »`
-        3. Выбрать пункты `Стена` и `Доступ в любое время`
-        4. Нажать на кнопку `Получить`
-
-        ![VKHost](https://mlabs.space/data/overview/img/vkhost_github_io.png)
-
-        5. Подтвердить доступ к вашему аккаунту, нажав `Разрешить`
-
-        ![VK Access](https://mlabs.space/data/overview/img/vk_access.png)
-        ![VK OAuth](https://mlabs.space/data/overview/img/vk_oauth.png)
-
-        6. В появившемся URL найдите часть между `access_token=` и `&expires_in=`
-        7. Скопируйте этот токен и вставьте его в поле ниже
-        """)
+        st.markdown(t["token_instructions"])
 
     access_token = st.text_input(t["token_input"], type="password")
 
