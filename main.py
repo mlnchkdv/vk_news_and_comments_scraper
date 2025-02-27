@@ -4,11 +4,28 @@ import pandas as pd
 import time
 import datetime
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Функция для преобразования datetime в UNIX-время
 def get_unixtime_from_datetime(dt):
+    """
+    Преобразует объект datetime в UNIX-время.
+    
+    :param dt: объект datetime
+    :return: UNIX-время (целое число)
+    """
     return int(time.mktime(dt.timetuple()))
 
+# Функция для получения комментариев к посту
 def get_comments(post_id, owner_id, access_token):
+    """
+    Получает комментарии к посту по его ID и ID владельца.
+    
+    :param post_id: ID поста
+    :param owner_id: ID владельца поста
+    :param access_token: токен доступа VK API
+    :return: список комментариев
+    """
     url = (
         f"https://api.vk.com/method/wall.getComments?"
         f"owner_id={owner_id}&post_id={post_id}&access_token={access_token}&v=5.131"
@@ -21,13 +38,78 @@ def get_comments(post_id, owner_id, access_token):
         else:
             return []
     except Exception as e:
-        st.error(f"Error fetching comments: {e}")
+        st.error(f"Ошибка при получении комментариев: {e}")
         return []
 
-def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include_comments, progress_bar, time_sleep):
-    df = pd.DataFrame()
+# Функция для выполнения одного запроса к VK API
+def execute_query(query, current_time, delta, access_token, include_comments, search_mode):
+    """
+    Выполняет один запрос к VK API для поиска постов.
+    
+    :param query: поисковый запрос
+    :param current_time: текущее время для запроса
+    :param delta: временной интервал для запроса
+    :param access_token: токен доступа VK API
+    :param include_comments: флаг для включения комментариев
+    :param search_mode: режим поиска ('exact' или 'partial')
+    :return: кортеж из списка постов и списка комментариев
+    """
+    url = (
+        f"https://api.vk.com/method/newsfeed.search?q={query}"
+        f"&count=200"
+        f"&access_token={access_token}"
+        f"&start_time={get_unixtime_from_datetime(current_time)}"
+        f"&end_time={get_unixtime_from_datetime(current_time + delta)}"
+        f"&v=5.131"
+    )
+
+    posts = []
+    comments = []
+
+    try:
+        res = requests.get(url)
+        json_text = res.json()
+
+        if 'response' in json_text and 'items' in json_text['response']:
+            for item in json_text['response']['items']:
+                if search_mode == 'exact':
+                    if re.search(r'\b' + re.escape(query) + r'\b', item['text'], re.IGNORECASE):
+                        item['matched_query'] = query
+                        posts.append(item)
+                else:
+                    if query.lower() in item['text'].lower():
+                        item['matched_query'] = query
+                        posts.append(item)
+
+                if include_comments:
+                    post_comments = get_comments(item['id'], item['owner_id'], access_token)
+                    for comment in post_comments:
+                        comment['post_id'] = item['id']
+                        comment['post_owner_id'] = item['owner_id']
+                    comments.extend(post_comments)
+
+    except Exception as e:
+        st.error(f"Ошибка при выполнении запроса: {e}")
+
+    return posts, comments
+
+# Основная функция для получения новостной ленты VK
+def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include_comments, progress_bar, time_sleep, search_mode):
+    """
+    Получает новостную ленту VK на основе заданных параметров.
+    
+    :param queries: список поисковых запросов
+    :param start_datetime: начальная дата и время поиска
+    :param end_datetime: конечная дата и время поиска
+    :param access_token: токен доступа VK API
+    :param include_comments: флаг для включения комментариев
+    :param progress_bar: объект для отображения прогресса
+    :param time_sleep: время задержки между запросами
+    :param search_mode: режим поиска ('exact' или 'partial')
+    :return: кортеж из DataFrame с постами и DataFrame с комментариями
+    """
+    all_posts = []
     all_comments = []
-    count = "200"
 
     delta = datetime.timedelta(days=1)
     current_time = start_datetime
@@ -35,78 +117,66 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
     total_seconds = (end_datetime - start_datetime).total_seconds()
     start_time = time.time()
 
-    while current_time <= end_datetime:
-        for query in queries:
-            url = (
-                f"https://api.vk.com/method/newsfeed.search?q={query}"
-                f"&count={count}"
-                f"&access_token={access_token}"
-                f"&start_time={get_unixtime_from_datetime(current_time)}"
-                f"&end_time={get_unixtime_from_datetime(current_time + delta)}"
-                f"&v=5.131"
-            )
+    # Используем ThreadPoolExecutor для параллельного выполнения запросов
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_query = {}
+        while current_time <= end_datetime:
+            for query in queries:
+                future = executor.submit(execute_query, query, current_time, delta, access_token, include_comments, search_mode)
+                future_to_query[future] = query
 
-            try:
-                res = requests.get(url)
-                json_text = res.json()
+            for future in as_completed(future_to_query):
+                query = future_to_query[future]
+                try:
+                    posts, comments = future.result()
+                    all_posts.extend(posts)
+                    all_comments.extend(comments)
+                except Exception as e:
+                    st.error(f"Ошибка при обработке запроса '{query}': {e}")
 
-                if 'response' in json_text and 'items' in json_text['response']:
-                    for item in json_text['response']['items']:
-                        # Check if the exact query is in the post text
-                        if re.search(r'\b' + re.escape(query) + r'\b', item['text'], re.IGNORECASE):
-                            item['matched_query'] = query
-                            if include_comments:
-                                post_id = item['id']
-                                owner_id = item['owner_id']
-                                comments = get_comments(post_id, owner_id, access_token)
-                                if comments:
-                                    for comment in comments:
-                                        comment['post_id'] = post_id
-                                        comment['post_owner_id'] = owner_id
-                                    all_comments.extend(comments)
+            elapsed_time = time.time() - start_time
+            progress = min(elapsed_time / total_seconds, 1.0)
+            progress_bar.progress(progress)
 
-                            items_df = pd.DataFrame([item])
-                            df = pd.concat([df, items_df], ignore_index=True)
-
-                else:
-                    st.warning(f"No data in response for {query} at {current_time}")
-
-            except Exception as e:
-                st.error(f"Error executing request: {e}")
-
+            current_time += delta
             time.sleep(time_sleep)
 
-        elapsed_time = time.time() - start_time
-        progress = min(elapsed_time / total_seconds, 1.0)
-        progress_bar.progress(progress)
+    df = pd.DataFrame(all_posts)
+    comments_df = pd.DataFrame(all_comments)
 
-        current_time += delta
-
-    comments_df = pd.DataFrame(all_comments) if all_comments else pd.DataFrame()
     return df, comments_df
 
+# Функция для отображения поста с комментариями
 def display_post_with_comments(post, comments):
-    st.write(f"**Post ID:** {post['id']}")
-    st.write(f"**Date:** {post['date']}")
-    st.write(f"**Text:** {post['text']}")
-    st.write(f"**Matched Query:** {post['matched_query']}")
-    st.write(f"👍 {post.get('likes_count', 'N/A')} | 🔁 {post.get('reposts_count', 'N/A')} | 👀 {post.get('views_count', 'N/A')}")
-    st.write("**Comments:**")
+    """
+    Отображает пост с его комментариями.
+    
+    :param post: словарь с данными поста
+    :param comments: список комментариев к посту
+    """
+    st.write(f"**📌 Post ID:** {post['id']}")
+    st.write(f"**🕒 Date:** {post['date']}")
+    st.write(f"**📝 Text:** {post['text']}")
+    st.write(f"**🔍 Matched Query:** {post['matched_query']}")
+    st.write(f"👍 {post.get('likes', {}).get('count', 'N/A')} | 🔁 {post.get('reposts', {}).get('count', 'N/A')} | 👀 {post.get('views', {}).get('count', 'N/A')}")
+    st.write("**💬 Comments:**")
     for comment in comments:
-        st.text(f"{comment['from_id']} ({comment['date']}): {comment['text']}")
+        st.text(f"👤 {comment['from_id']} ({comment['date']}): {comment['text']}")
     st.write("---")
 
+# Основная функция приложения
 def main():
-    # Language selection
+    # Выбор языка
     lang = st.sidebar.selectbox("Language / Язык", ["English", "Русский"])
 
+    # Словарь с текстами на разных языках
     texts = {
         "English": {
-            "title": "VK News and Comments Parser",
+            "title": "📊 VK News and Comments Parser",
             "description": "This application allows you to search for posts and comments on VK (VKontakte) using keywords or phrases. You can specify the time period, include comments, and view the results in various formats.",
-            "token_instruction": "How to get VK API access token",
+            "token_instruction": "🔑 How to get VK API access token",
             "token_input": "Enter your VK API access token:",
-            "queries_instruction": "Enter your search queries. Each query should be on a new line. The search will find posts containing the exact phrases you enter.",
+            "queries_instruction": "Enter your search queries. Each query should be on a new line.",
             "queries_input": "Enter keywords or expressions (one per line):",
             "start_date": "Start date:",
             "start_time": "Start time:",
@@ -114,10 +184,10 @@ def main():
             "end_time": "End time:",
             "include_comments": "Include comments",
             "time_sleep": "Time sleep between requests (seconds)",
-            "start_parsing": "Start Parsing",
+            "start_parsing": "🚀 Start Parsing",
             "select_columns": "Select columns to display and save",
-            "posts": "Posts",
-            "comments": "Comments",
+            "posts": "📝 Posts",
+            "comments": "💬 Comments",
             "display_option": "Choose display option",
             "table_view": "Table view",
             "post_view": "Post view",
@@ -126,6 +196,10 @@ def main():
             "newest": "Newest",
             "oldest": "Oldest",
             "top_posts": "Number of top posts to display",
+            "search_mode": "Search mode",
+            "exact_search": "Exact phrase",
+            "partial_search": "Partial match",
+            "search_mode_instruction": "Choose the search mode:",
             "token_instructions": """
             To generate an `access token`:
             1. Go to https://vkhost.github.io/
@@ -135,14 +209,19 @@ def main():
             5. Confirm access to your account by clicking `Allow`
             6. In the resulting URL, find the part between `access_token=` and `&expires_in=`
             7. Copy this token and paste it in the field below
+            """,
+            "search_mode_example": """
+            Example:
+            - Exact phrase: "data science" will find posts containing exactly "data science"
+            - Partial match: "data science" will find posts containing "data" or "science" separately
             """
         },
         "Русский": {
-            "title": "Парсер новостей и комментариев ВКонтакте",
+            "title": "📊 Парсер новостей и комментариев ВКонтакте",
             "description": "Это приложение позволяет искать посты и комментарии во ВКонтакте, используя ключевые слова или фразы. Вы можете указать временной период, включить комментарии и просматривать результаты в различных форматах.",
-            "token_instruction": "Как получить токен доступа VK API",
+            "token_instruction": "🔑 Как получить токен доступа VK API",
             "token_input": "Введите ваш токен доступа VK API:",
-            "queries_instruction": "Введите ваши поисковые запросы. Каждый запрос должен быть на новой строке. Поиск будет находить посты, содержащие точные фразы, которые вы вводите.",
+            "queries_instruction": "Введите ваши поисковые запросы. Каждый запрос должен быть на новой строке.",
             "queries_input": "Введите ключевые слова или выражения (по одному на строку):",
             "start_date": "Дата начала:",
             "start_time": "Время начала:",
@@ -150,10 +229,10 @@ def main():
             "end_time": "Время окончания:",
             "include_comments": "Включить комментарии",
             "time_sleep": "Пауза между запросами (секунды)",
-            "start_parsing": "Начать парсинг",
+            "start_parsing": "🚀 Начать парсинг",
             "select_columns": "Выберите столбцы для отображения и сохранения",
-            "posts": "Посты",
-            "comments": "Комментарии",
+            "posts": "📝 Посты",
+            "comments": "💬 Комментарии",
             "display_option": "Выберите вариант отображения",
             "table_view": "Табличный вид",
             "post_view": "Вид постов",
@@ -162,6 +241,10 @@ def main():
             "newest": "Новейшие",
             "oldest": "Старейшие",
             "top_posts": "Количество отображаемых топ-постов",
+            "search_mode": "Режим поиска",
+            "exact_search": "Точная фраза",
+            "partial_search": "Частичное совпадение",
+            "search_mode_instruction": "Выберите режим поиска:",
             "token_instructions": """
             Для генерации `access token` необходимо:
             1. Перейти на сайт https://vkhost.github.io/
@@ -171,6 +254,11 @@ def main():
             5. Подтвердить доступ к вашему аккаунту, нажав `Разрешить`
             6. В появившемся URL найдите часть между `access_token=` и `&expires_in=`
             7. Скопируйте этот токен и вставьте его в поле ниже
+            """,
+            "search_mode_example": """
+            Пример:
+            - Точная фраза: "наука о данных" найдет посты, содержащие точно "наука о данных"
+            - Частичное совпадение: "наука о данных" найдет посты, содержащие "наука" или "данных" по отдельности
             """
         }
     }
@@ -187,7 +275,7 @@ def main():
 
     st.write(t["queries_instruction"])
     queries = st.text_area(t["queries_input"])
-    
+
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         start_date = st.date_input(t["start_date"])
@@ -203,6 +291,10 @@ def main():
     
     include_comments = st.checkbox(t["include_comments"], value=True)
     time_sleep = st.slider(t["time_sleep"], min_value=0.1, max_value=6.0, value=0.5, step=0.1)
+
+    st.write(t["search_mode_instruction"])
+    search_mode = st.radio(t["search_mode"], [t["exact_search"], t["partial_search"]])
+    st.info(t["search_mode_example"])
 
     if 'full_df' not in st.session_state:
         st.session_state.full_df = None
@@ -227,7 +319,8 @@ def main():
 
         status_text.text("Parsing in progress...")
         df, comments_df = get_vk_newsfeed(queries_list, start_datetime, end_datetime, 
-                                          access_token, include_comments, progress_bar, time_sleep)
+                                          access_token, include_comments, progress_bar, time_sleep,
+                                          'exact' if search_mode == t["exact_search"] else 'partial')
         status_text.text("Parsing completed!")
 
         if not df.empty:
