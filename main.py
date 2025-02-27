@@ -6,11 +6,9 @@ import datetime
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Функция для преобразования datetime в UNIX-время
 def get_unixtime_from_datetime(dt):
     return int(time.mktime(dt.timetuple()))
 
-# Функция для получения комментариев к посту
 def get_comments(post_id, owner_id, access_token):
     url = (
         f"https://api.vk.com/method/wall.getComments?"
@@ -24,14 +22,13 @@ def get_comments(post_id, owner_id, access_token):
         st.error(f"Ошибка при получении комментариев: {e}")
         return []
 
-# Функция для выполнения одного запроса к VK API
-def execute_query(query, current_time, delta, access_token, include_comments, search_mode):
+def execute_query(query, start_time, end_time, access_token, include_comments, search_mode):
     url = (
         f"https://api.vk.com/method/newsfeed.search?q={query}"
         f"&count=200"
         f"&access_token={access_token}"
-        f"&start_time={get_unixtime_from_datetime(current_time)}"
-        f"&end_time={get_unixtime_from_datetime(current_time + delta)}"
+        f"&start_time={get_unixtime_from_datetime(start_time)}"
+        f"&end_time={get_unixtime_from_datetime(end_time)}"
         f"&v=5.131"
     )
 
@@ -65,41 +62,37 @@ def execute_query(query, current_time, delta, access_token, include_comments, se
 
     return posts, comments
 
-# Основная функция для получения новостной ленты VK
-def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include_comments, progress_bar, status_text, time_sleep, search_mode):
+def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include_comments, progress_bar, status_text, time_sleep, search_mode, time_step):
     all_posts = []
     all_comments = []
 
-    delta = datetime.timedelta(hours=1)  # Уменьшаем интервал до 1 часа для более частых обновлений
+    delta = datetime.timedelta(hours=time_step)
     current_time = start_datetime
 
-    total_seconds = (end_datetime - start_datetime).total_seconds()
-    start_time = time.time()
+    total_steps = int((end_datetime - start_datetime) / delta)
+    step_count = 0
 
-    with ThreadPoolExecutor(max_workers=10) as executor:  # Увеличиваем количество потоков
-        future_to_query = {}
-        while current_time <= end_datetime:
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        while current_time < end_datetime:
+            step_count += 1
+            futures = []
             for query in queries:
-                future = executor.submit(execute_query, query, current_time, delta, access_token, include_comments, search_mode)
-                future_to_query[future] = query
+                end_time = min(current_time + delta, end_datetime)
+                futures.append(executor.submit(execute_query, query, current_time, end_time, access_token, include_comments, search_mode))
 
-            for future in as_completed(future_to_query):
-                query = future_to_query[future]
-                try:
-                    posts, comments = future.result()
-                    all_posts.extend(posts)
-                    all_comments.extend(comments)
-                except Exception as e:
-                    st.error(f"Ошибка при обработке запроса '{query}': {e}")
+            for future in as_completed(futures):
+                posts, comments = future.result()
+                all_posts.extend(posts)
+                all_comments.extend(comments)
 
-            elapsed_time = time.time() - start_time
-            progress = min(elapsed_time / total_seconds, 1.0)
+            progress = step_count / total_steps
             progress_bar.progress(progress)
 
-            # Обновляем статус
-            current_posts = len(all_posts)
-            current_comments = len(all_comments)
-            status_text.text(f"⏳ Прошло времени: {elapsed_time:.2f} сек | 📊 Найдено постов: {current_posts} | 💬 Комментариев: {current_comments} | 🕒 Текущая дата: {current_time}")
+            elapsed_time = (current_time - start_datetime).total_seconds()
+            total_time = (end_datetime - start_datetime).total_seconds()
+            eta = (total_time - elapsed_time) / progress if progress > 0 else 0
+
+            status_text.text(f"⏳ Прогресс: {progress:.2%} | 📊 Найдено постов: {len(all_posts)} | 💬 Комментариев: {len(all_comments)} | 🕒 Текущая дата: {current_time} | ⏱️ Осталось примерно: {eta/60:.1f} мин")
 
             current_time += delta
             time.sleep(time_sleep)
@@ -109,7 +102,6 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
 
     return df, comments_df
 
-# Основная функция приложения
 def main():
     st.set_page_config(page_title="VK Parser", page_icon="📊", layout="wide")
 
@@ -125,34 +117,46 @@ def main():
         
         2. 📝 **Введите поисковые запросы**:
            - Каждый запрос с новой строки
-           - Используйте точные фразы или ключевые слова
+           - Для точного поиска фразы, заключите её в кавычки, например: "искусственный интеллект"
+           - Для поиска по отдельным словам, просто введите их, например: новости технологии
         
         3. 📅 **Выберите период поиска**:
-           - Укажите начальную и конечную даты
+           - Укажите начальную и конечную даты и время
+           - Помните, что чем больше период, тем дольше будет выполняться парсинг
         
         4. 🔍 **Настройте параметры поиска**:
            - Выберите режим поиска (точная фраза или частичное совпадение)
-           - Укажите, нужно ли включать комментарии
+           - Укажите, нужно ли включать комментарии (это может значительно увеличить время парсинга)
+           - Установите шаг парсинга (в часах). Меньший шаг даёт более точные результаты, но увеличивает время работы
         
         5. 🚀 **Запустите парсинг**:
            - Нажмите кнопку "Начать парсинг"
-           - Дождитесь завершения процесса
+           - Следите за прогрессом в статус-баре
         
         6. 📊 **Анализируйте результаты**:
-           - Просматривайте данные в таблице
-           - Загрузите результаты в CSV формате
+           - Просматривайте данные в таблицах "Посты" и "Комментарии"
+           - Используйте фильтры и сортировку для анализа данных
+           - Загрузите результаты в CSV формате для дальнейшего анализа
+        
+        ⚠️ **Важно**: 
+        - VK API ограничивает количество постов до 200 на один запрос
+        - Большой шаг парсинга может привести к потере данных для популярных запросов
+        - Маленький шаг увеличивает точность, но замедляет работу парсера
+        - Экспериментируйте с настройками для оптимального баланса скорости и полноты данных
         """)
 
     access_token = st.text_input("🔑 Введите ваш токен доступа VK API:", type="password")
 
     queries = st.text_area("📝 Введите поисковые запросы (каждый с новой строки):")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         start_date = st.date_input("📅 Дата начала:")
-        start_time = st.time_input("🕒 Время начала:")
     with col2:
+        start_time = st.time_input("🕒 Время начала:")
+    with col3:
         end_date = st.date_input("📅 Дата окончания:")
+    with col4:
         end_time = st.time_input("🕒 Время окончания:")
     
     start_datetime = datetime.datetime.combine(start_date, start_time)
@@ -162,6 +166,8 @@ def main():
     time_sleep = st.slider("⏱️ Пауза между запросами (секунды)", min_value=0.1, max_value=2.0, value=0.5, step=0.1)
 
     search_mode = st.radio("🔍 Режим поиска:", ["Точная фраза", "Частичное совпадение"])
+    
+    time_step = st.slider("📊 Шаг парсинга (часы)", min_value=1, max_value=24, value=1, step=1)
     
     if 'full_df' not in st.session_state:
         st.session_state.full_df = None
@@ -175,7 +181,7 @@ def main():
             st.error("Пожалуйста, заполните все поля.")
             return
 
-        if (end_datetime - start_datetime).total_seconds() < 3600:  # Минимальный период - 1 час
+        if (end_datetime - start_datetime).total_seconds() < 3600:
             st.error("Минимальный период парсинга должен быть не менее 1 часа.")
             return
 
@@ -187,13 +193,12 @@ def main():
         status_text.text("Парсинг начался...")
         df, comments_df = get_vk_newsfeed(queries_list, start_datetime, end_datetime, 
                                           access_token, include_comments, progress_bar, status_text, time_sleep,
-                                          'exact' if search_mode == "Точная фраза" else 'partial')
+                                          'exact' if search_mode == "Точная фраза" else 'partial', time_step)
         status_text.text("Парсинг завершен!")
 
         if not df.empty:
             df['date'] = pd.to_datetime(df['date'], unit='s')
             
-            # Переупорядочиваем столбцы
             columns_order = ['matched_query', 'text', 'date', 'id', 'owner_id', 'from_id', 'likes', 'reposts', 'views', 'comments']
             df = df.reindex(columns=columns_order + [col for col in df.columns if col not in columns_order])
 
