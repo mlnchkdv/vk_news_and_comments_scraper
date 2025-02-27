@@ -27,8 +27,8 @@ def execute_query(query, start_time, end_time, access_token, include_comments, s
         f"https://api.vk.com/method/newsfeed.search?q={query}"
         f"&count=200"
         f"&access_token={access_token}"
-        f"&start_time={get_unixtime_from_datetime(start_time)}"
-        f"&end_time={get_unixtime_from_datetime(end_time)}"
+        f"&start_time={start_time}"
+        f"&end_time={end_time}"
         f"&v=5.131"
     )
 
@@ -42,11 +42,11 @@ def execute_query(query, start_time, end_time, access_token, include_comments, s
         if 'response' in json_text and 'items' in json_text['response']:
             for item in json_text['response']['items']:
                 if search_mode == 'exact':
-                    if re.search(r'\b' + re.escape(query) + r'\b', item['text'], re.IGNORECASE):
+                    if re.search(r'\b' + re.escape(query) + r'\b', item.get('text', ''), re.IGNORECASE):
                         item['matched_query'] = query
                         posts.append(item)
                 else:
-                    if query.lower() in item['text'].lower():
+                    if query.lower() in item.get('text', '').lower():
                         item['matched_query'] = query
                         posts.append(item)
 
@@ -80,7 +80,15 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
             futures = []
             for query in queries:
                 end_time = min(current_time + delta, end_datetime)
-                futures.append(executor.submit(execute_query, query, current_time, end_time, access_token, include_comments, search_mode))
+                futures.append(executor.submit(
+                    execute_query, 
+                    query, 
+                    get_unixtime_from_datetime(current_time),
+                    get_unixtime_from_datetime(end_time),
+                    access_token, 
+                    include_comments, 
+                    search_mode
+                ))
 
             for future in as_completed(futures):
                 posts, comments = future.result()
