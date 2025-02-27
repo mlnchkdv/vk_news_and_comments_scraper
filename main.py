@@ -88,42 +88,122 @@ def display_post_with_comments(post, comments):
     st.write(f"**Date:** {post['date']}")
     st.write(f"**Text:** {post['text']}")
     st.write(f"**Matched Query:** {post['matched_query']}")
-    st.write(f"**Likes:** {post.get('likes_count', 'N/A')}")
-    st.write(f"**Views:** {post.get('views_count', 'N/A')}")
-    st.write(f"**Reposts:** {post.get('reposts_count', 'N/A')}")
+    st.write(f"👍 {post.get('likes_count', 'N/A')} | 🔁 {post.get('reposts_count', 'N/A')} | 👀 {post.get('views_count', 'N/A')}")
     st.write("**Comments:**")
     for comment in comments:
         st.text(f"{comment['from_id']} ({comment['date']}): {comment['text']}")
     st.write("---")
 
 def main():
-    st.title("VK News and Comments Parser")
+    # Language selection
+    lang = st.sidebar.selectbox("Language / Язык", ["English", "Русский"])
 
-    access_token = st.text_input("Enter your VK API access token:", type="password")
-    queries = st.text_area("Enter keywords or expressions (one per line):")
+    texts = {
+        "English": {
+            "title": "VK News and Comments Parser",
+            "description": "This application allows you to search for posts and comments on VK (VKontakte) using keywords or phrases. You can specify the time period, include comments, and view the results in various formats.",
+            "token_instruction": "How to get VK API access token",
+            "token_input": "Enter your VK API access token:",
+            "queries_instruction": "Enter your search queries. Each query should be on a new line. You can use exact phrases or individual words.",
+            "queries_input": "Enter keywords or expressions (one per line):",
+            "start_date": "Start date:",
+            "start_time": "Start time:",
+            "end_date": "End date:",
+            "end_time": "End time:",
+            "include_comments": "Include comments",
+            "time_sleep": "Time sleep between requests (seconds)",
+            "start_parsing": "Start Parsing",
+            "select_columns": "Select columns to display and save",
+            "posts": "Posts",
+            "comments": "Comments",
+            "display_option": "Choose display option",
+            "table_view": "Table view",
+            "post_view": "Post view",
+            "sort_posts": "Sort posts by",
+            "most_commented": "Most commented",
+            "newest": "Newest",
+            "oldest": "Oldest",
+            "top_posts": "Number of top posts to display",
+        },
+        "Русский": {
+            "title": "Парсер новостей и комментариев ВКонтакте",
+            "description": "Это приложение позволяет искать посты и комментарии во ВКонтакте, используя ключевые слова или фразы. Вы можете указать временной период, включить комментарии и просматривать результаты в различных форматах.",
+            "token_instruction": "Как получить токен доступа VK API",
+            "token_input": "Введите ваш токен доступа VK API:",
+            "queries_instruction": "Введите ваши поисковые запросы. Каждый запрос должен быть на новой строке. Вы можете использовать точные фразы или отдельные слова.",
+            "queries_input": "Введите ключевые слова или выражения (по одному на строку):",
+            "start_date": "Дата начала:",
+            "start_time": "Время начала:",
+            "end_date": "Дата окончания:",
+            "end_time": "Время окончания:",
+            "include_comments": "Включить комментарии",
+            "time_sleep": "Пауза между запросами (секунды)",
+            "start_parsing": "Начать парсинг",
+            "select_columns": "Выберите столбцы для отображения и сохранения",
+            "posts": "Посты",
+            "comments": "Комментарии",
+            "display_option": "Выберите вариант отображения",
+            "table_view": "Табличный вид",
+            "post_view": "Вид постов",
+            "sort_posts": "Сортировать посты по",
+            "most_commented": "Самые комментируемые",
+            "newest": "Новейшие",
+            "oldest": "Старейшие",
+            "top_posts": "Количество отображаемых топ-постов",
+        }
+    }
+
+    t = texts[lang]
+
+    st.title(t["title"])
+    st.write(t["description"])
+
+    with st.expander(t["token_instruction"]):
+        st.markdown("""
+        Для генерации `access token` необходимо:
+        1. Перейти на сайт https://vkhost.github.io/
+        2. Нажать на `Настройки »`
+        3. Выбрать пункты `Стена` и `Доступ в любое время`
+        4. Нажать на кнопку `Получить`
+
+        ![VKHost](https://mlabs.space/data/overview/img/vkhost_github_io.png)
+
+        5. Подтвердить доступ к вашему аккаунту, нажав `Разрешить`
+
+        ![VK Access](https://mlabs.space/data/overview/img/vk_access.png)
+        ![VK OAuth](https://mlabs.space/data/overview/img/vk_oauth.png)
+
+        6. В появившемся URL найдите часть между `access_token=` и `&expires_in=`
+        7. Скопируйте этот токен и вставьте его в поле ниже
+        """)
+
+    access_token = st.text_input(t["token_input"], type="password")
+
+    st.write(t["queries_instruction"])
+    queries = st.text_area(t["queries_input"])
     
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        start_date = st.date_input("Start date:")
+        start_date = st.date_input(t["start_date"])
     with col2:
-        start_time = st.time_input("Start time:")
+        start_time = st.time_input(t["start_time"])
     with col3:
-        end_date = st.date_input("End date:")
+        end_date = st.date_input(t["end_date"])
     with col4:
-        end_time = st.time_input("End time:")
+        end_time = st.time_input(t["end_time"])
     
     start_datetime = datetime.datetime.combine(start_date, start_time)
     end_datetime = datetime.datetime.combine(end_date, end_time)
     
-    include_comments = st.checkbox("Include comments", value=True)
-    time_sleep = st.slider("Time sleep between requests (seconds)", min_value=0.1, max_value=6.0, value=0.5, step=0.1)
+    include_comments = st.checkbox(t["include_comments"], value=True)
+    time_sleep = st.slider(t["time_sleep"], min_value=0.1, max_value=6.0, value=0.5, step=0.1)
 
     if 'full_df' not in st.session_state:
         st.session_state.full_df = None
     if 'comments_df' not in st.session_state:
         st.session_state.comments_df = None
 
-    start_parsing = st.button("Start Parsing")
+    start_parsing = st.button(t["start_parsing"])
 
     if start_parsing:
         if not access_token or not queries or not start_date or not end_date:
@@ -157,9 +237,9 @@ def main():
     if st.session_state.full_df is not None:
         # Allow user to select columns after data is loaded
         all_columns = st.session_state.full_df.columns.tolist()
-        selected_columns = st.multiselect("Select columns to display and save", all_columns, default=all_columns, key='selected_columns')
+        selected_columns = st.multiselect(t["select_columns"], all_columns, default=all_columns, key='selected_columns')
 
-        st.subheader("Posts")
+        st.subheader(t["posts"])
         st.write(st.session_state.full_df[selected_columns])
 
         csv = st.session_state.full_df[selected_columns].to_csv(index=False).encode('utf-8')
@@ -171,10 +251,10 @@ def main():
         )
 
         if include_comments and not st.session_state.comments_df.empty:
-            st.subheader("Comments")
-            display_option = st.radio("Choose display option", ["Table view", "Post view"])
+            st.subheader(t["comments"])
+            display_option = st.radio(t["display_option"], [t["table_view"], t["post_view"]])
             
-            if display_option == "Table view":
+            if display_option == t["table_view"]:
                 st.write(st.session_state.comments_df)
 
                 comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
@@ -193,16 +273,16 @@ def main():
                 posts_with_comments['comment_count'] = posts_with_comments['comments'].apply(len)
 
                 # Sorting options
-                sort_option = st.selectbox("Sort posts by", ["Most commented", "Newest", "Oldest"])
-                if sort_option == "Most commented":
+                sort_option = st.selectbox(t["sort_posts"], [t["most_commented"], t["newest"], t["oldest"]])
+                if sort_option == t["most_commented"]:
                     posts_with_comments = posts_with_comments.sort_values('comment_count', ascending=False)
-                elif sort_option == "Newest":
+                elif sort_option == t["newest"]:
                     posts_with_comments = posts_with_comments.sort_values('date', ascending=False)
                 else:  # Oldest
                     posts_with_comments = posts_with_comments.sort_values('date')
 
                 # Number of top posts to display
-                top_n = st.slider("Number of top posts to display", min_value=1, max_value=len(posts_with_comments), value=5)
+                top_n = st.slider(t["top_posts"], min_value=1, max_value=len(posts_with_comments), value=5)
 
                 # Display posts with comments
                 for _, post in posts_with_comments.head(top_n).iterrows():
