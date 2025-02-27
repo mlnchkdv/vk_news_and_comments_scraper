@@ -72,6 +72,8 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
     total_steps = int((end_datetime - start_datetime) / delta)
     step_count = 0
 
+    start_time = time.time()
+
     with ThreadPoolExecutor(max_workers=10) as executor:
         while current_time < end_datetime:
             step_count += 1
@@ -88,11 +90,14 @@ def get_vk_newsfeed(queries, start_datetime, end_datetime, access_token, include
             progress = step_count / total_steps
             progress_bar.progress(progress)
 
-            elapsed_time = (current_time - start_datetime).total_seconds()
-            total_time = (end_datetime - start_datetime).total_seconds()
-            eta = (total_time - elapsed_time) / progress if progress > 0 else 0
+            elapsed_time = time.time() - start_time
+            eta = (elapsed_time / progress) - elapsed_time if progress > 0 else 0
 
-            status_text.text(f"⏳ Прогресс: {progress:.2%} | 📊 Найдено постов: {len(all_posts)} | 💬 Комментариев: {len(all_comments)} | 🕒 Текущая дата: {current_time} | ⏱️ Осталось примерно: {eta/60:.1f} мин")
+            status_text.text(
+                f"⏳ Прогресс: {progress:.2%} | ⌛ Прошло времени: {elapsed_time:.1f} сек\n"
+                f"📊 Найдено постов: {len(all_posts)} | 💬 Комментариев: {len(all_comments)}\n"
+                f"🕒 Текущая дата: {current_time} | ⏱️ Осталось примерно: {eta/60:.1f} мин"
+            )
 
             current_time += delta
             time.sleep(time_sleep)
