@@ -14,9 +14,9 @@ MAX_POSTS_PER_REQUEST = 100
 DEFAULT_PAUSE = 5
 MAX_PAUSE = 10
 
-def get_posts(owner_id, count, offset, start_time, end_time, api_key):
+def get_posts(query, count, offset, start_time, end_time, api_key):
     params = {
-        'owner_id': owner_id,
+        'q': query,
         'count': count,
         'offset': offset,
         'start_time': start_time,
@@ -24,7 +24,7 @@ def get_posts(owner_id, count, offset, start_time, end_time, api_key):
         'access_token': api_key,
         'v': '5.131'
     }
-    response = requests.get('https://api.vk.com/method/wall.get', params=params)
+    response = requests.get('https://api.vk.com/method/newsfeed.search', params=params)
     return response.json()
 
 def get_comments(owner_id, post_id, api_key):
@@ -39,7 +39,7 @@ def get_comments(owner_id, post_id, api_key):
     response = requests.get('https://api.vk.com/method/wall.getComments', params=params)
     return response.json()
 
-def execute_query(owner_id, start_time, end_time, keyword, api_keys, pause, search_mode, progress_bar):
+def execute_query(query, start_time, end_time, api_keys, pause, search_mode, progress_bar):
     all_posts = []
     all_comments = []
     total_posts = 0
@@ -58,18 +58,18 @@ def execute_query(owner_id, start_time, end_time, keyword, api_keys, pause, sear
             current_api_key_index = (current_api_key_index + 1) % len(api_keys)
             
             try:
-                response = get_posts(owner_id, MAX_POSTS_PER_REQUEST, offset, 
+                response = get_posts(query, MAX_POSTS_PER_REQUEST, offset, 
                                      int(current_datetime.timestamp()), 
                                      int(current_end.timestamp()), 
                                      api_key)
                 
                 if 'error' in response:
                     if response['error']['error_code'] == 6:
-                        st.warning(f"API key {api_key[-4:]} is temporarily banned. Switching to next key.")
+                        st.warning(f"API ключ {api_key[-4:]} временно заблокирован. Переключение на следующий ключ.")
                         time.sleep(pause)
                         continue
                     else:
-                        raise Exception(f"API Error: {response['error']['error_msg']}")
+                        raise Exception(f"Ошибка API: {response['error']['error_msg']}")
                 
                 posts = response['response']['items']
                 
@@ -78,14 +78,14 @@ def execute_query(owner_id, start_time, end_time, keyword, api_keys, pause, sear
                 
                 for post in posts:
                     if 'text' in post:
-                        if search_mode == 'Точная фраза' and keyword.lower() in post['text'].lower():
+                        if search_mode == 'Точная фраза' and query.lower() in post['text'].lower():
                             all_posts.append(post)
                             total_posts += 1
-                        elif search_mode == 'Частичное совпадение' and re.search(keyword.lower(), post['text'].lower()):
+                        elif search_mode == 'Частичное совпадение' and re.search(query.lower(), post['text'].lower()):
                             all_posts.append(post)
                             total_posts += 1
                         
-                        comments_response = get_comments(owner_id, post['id'], api_key)
+                        comments_response = get_comments(post['owner_id'], post['id'], api_key)
                         if 'response' in comments_response and 'items' in comments_response['response']:
                             all_comments.extend(comments_response['response']['items'])
                 
@@ -95,7 +95,7 @@ def execute_query(owner_id, start_time, end_time, keyword, api_keys, pause, sear
                 time.sleep(pause)
             
             except Exception as e:
-                st.error(f"An error occurred: {str(e)}")
+                st.error(f"Произошла ошибка: {str(e)}")
                 return pd.DataFrame(), pd.DataFrame()
         
         current_datetime = current_end
@@ -112,14 +112,13 @@ def main():
     # Instructions
     with st.expander("Инструкция"):
         st.markdown("""
-        1. Введите ID сообщества VK (например, -1 для публичной страницы VK).
-        2. Выберите даты начала и окончания для поиска.
-        3. Введите ключевое слово или фразу для поиска.
-        4. Выберите режим поиска: точная фраза или частичное совпадение.
-        5. Введите один или несколько API ключей VK, разделенных запятой.
-        6. Настройте паузу между запросами для избежания блокировки.
-        7. Нажмите "Начать поиск" для запуска процесса.
-        8. Результаты будут отображены в отдельных вкладках.
+        1. Выберите даты начала и окончания для поиска.
+        2. Введите ключевое слово или фразу для поиска.
+        3. Выберите режим поиска: точная фраза или частичное совпадение.
+        4. Введите один или несколько API ключей VK, разделенных запятой.
+        5. Настройте паузу между запросами для избежания блокировки.
+        6. Нажмите "Начать поиск" для запуска процесса.
+        7. Результаты будут отображены в виде таблиц и доступны для скачивания.
         """)
 
     # Technical details and tips
@@ -137,20 +136,22 @@ def main():
         - При блокировке API ключа приложение автоматически переключится на следующий доступный ключ.
         """)
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
-        owner_id = st.text_input("ID сообщества VK", value="-1")
         start_date = st.date_input("Дата начала")
+        start_time = st.time_input("Время начала")
+    
+    with col2:
         end_date = st.date_input("Дата окончания")
+        end_time = st.time_input("Время окончания")
+    
+    with col3:
         keyword = st.text_input("Ключевое слово или фраза")
         search_mode = st.selectbox("Режим поиска", ["Точная фраза", "Частичное совпадение"])
 
-    with col2:
-        api_keys = st.text_area("API ключи VK (разделенные запятой)", height=100)
-        pause = st.slider("Пауза между запросами (секунды)", min_value=1, max_value=MAX_PAUSE, value=DEFAULT_PAUSE)
-        start_time = st.time_input("Время начала")
-        end_time = st.time_input("Время окончания")
+    api_keys = st.text_area("API ключи VK (разделенные запятой)", height=100)
+    pause = st.slider("Пауза между запросами (секунды)", min_value=1, max_value=MAX_PAUSE, value=DEFAULT_PAUSE)
 
     if st.button("Начать поиск"):
         api_keys_list = [key.strip() for key in api_keys.split(',') if key.strip()]
@@ -167,57 +168,33 @@ def main():
         progress_bar = st.progress(0)
         start_time = time.time()
 
-        posts_df, comments_df = execute_query(owner_id, start_timestamp, end_timestamp, keyword, api_keys_list, pause, search_mode, progress_bar)
+        posts_df, comments_df = execute_query(keyword, start_timestamp, end_timestamp, api_keys_list, pause, search_mode, progress_bar)
 
         if not posts_df.empty:
             st.success(f"Поиск завершен. Найдено {len(posts_df)} постов и {len(comments_df)} комментариев.")
             
-            # Create tabs for results
-            tab1, tab2, tab3 = st.tabs(["Статистика", "Посты", "Комментарии"])
+            st.subheader("Статистика")
+            st.write(f"Общее количество найденных постов: {len(posts_df)}")
+            st.write(f"Общее количество комментариев: {len(comments_df)}")
+            st.write(f"Период поиска: с {start_datetime} по {end_datetime}")
+            st.write(f"Ключевое слово: {keyword}")
+            st.write(f"Режим поиска: {search_mode}")
             
-            with tab1:
-                st.subheader("Ключевая информация и статистика")
-                st.write(f"Общее количество найденных постов: {len(posts_df)}")
-                st.write(f"Общее количество комментариев: {len(comments_df)}")
-                st.write(f"Период поиска: с {start_datetime} по {end_datetime}")
-                st.write(f"Ключевое слово: {keyword}")
-                st.write(f"Режим поиска: {search_mode}")
-                
-                if not posts_df.empty:
-                    st.write("Статистика по постам:")
-                    st.write(f"Среднее количество лайков: {posts_df['likes'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
-                    st.write(f"Среднее количество репостов: {posts_df['reposts'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
-                    st.write(f"Среднее количество просмотров: {posts_df['views'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
-                
-                if not comments_df.empty:
-                    st.write("Статистика по комментариям:")
-                    st.write(f"Среднее количество лайков на комментарий: {comments_df['likes'].mean():.2f}")
+            if not posts_df.empty:
+                st.write("Статистика по постам:")
+                st.write(f"Среднее количество лайков: {posts_df['likes'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
+                st.write(f"Среднее количество репостов: {posts_df['reposts'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
+                st.write(f"Среднее количество просмотров: {posts_df['views'].apply(lambda x: x['count'] if isinstance(x, dict) else 0).mean():.2f}")
             
-            with tab2:
-                st.subheader("Посты")
-                if not posts_df.empty:
-                    for index, post in posts_df.iterrows():
-                        st.write(f"Пост {index + 1}")
-                        st.write(f"Текст: {post['text']}")
-                        st.write(f"Дата: {datetime.fromtimestamp(post['date'])}")
-                        st.write(f"Лайки: {post['likes']['count'] if isinstance(post['likes'], dict) else 0}")
-                        st.write(f"Репосты: {post['reposts']['count'] if isinstance(post['reposts'], dict) else 0}")
-                        st.write(f"Просмотры: {post['views']['count'] if isinstance(post['views'], dict) else 0}")
-                        st.write("---")
-                else:
-                    st.write("Посты не найдены.")
-            
-            with tab3:
-                st.subheader("Комментарии")
-                if not comments_df.empty:
-                    for index, comment in comments_df.iterrows():
-                        st.write(f"Комментарий {index + 1}")
-                        st.write(f"Текст: {comment['text']}")
-                        st.write(f"Дата: {datetime.fromtimestamp(comment['date'])}")
-                        st.write(f"Лайки: {comment['likes']}")
-                        st.write("---")
-                else:
-                    st.write("Комментарии не найдены.")
+            if not comments_df.empty:
+                st.write("Статистика по комментариям:")
+                st.write(f"Среднее количество лайков на комментарий: {comments_df['likes'].mean():.2f}")
+
+            st.subheader("Посты")
+            st.dataframe(posts_df)
+
+            st.subheader("Комментарии")
+            st.dataframe(comments_df)
 
             # Save results to CSV
             posts_csv = posts_df.to_csv(index=False).encode('utf-8')
