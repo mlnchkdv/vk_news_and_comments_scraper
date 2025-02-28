@@ -8,6 +8,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import plotly.express as px
 import plotly.graph_objects as go
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
 
 def get_unixtime_from_datetime(dt):
     return int(time.mktime(dt.timetuple()))
@@ -276,9 +278,7 @@ def main():
             with col1:
                 st.metric("Всего постов", len(st.session_state.full_df))
             with col2:
-                st.metric("Всего коммент
-
-ариев", len(st.session_state.comments_df))
+                st.metric("Всего комментариев", len(st.session_state.comments_df))
             with col3:
                 st.metric("Уникальных авторов", st.session_state.full_df['from_id'].nunique())
 
@@ -305,15 +305,15 @@ def main():
             st.plotly_chart(fig)
 
             st.subheader("Облако тегов")
-            from wordcloud import WordCloud
-            import matplotlib.pyplot as plt
-
-            text = " ".join(review for review in st.session_state.full_df.text)
-            wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.axis('off')
-            st.pyplot(fig)
+            try:
+                text = " ".join(review for review in st.session_state.full_df.text)
+                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.axis('off')
+                st.pyplot(fig)
+            except ImportError:
+                st.warning("Библиотека wordcloud не установлена. Облако тегов недоступно.")
 
         with tab2:
             st.dataframe(st.session_state.full_df)
