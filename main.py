@@ -1,371 +1,296 @@
 import streamlit as st
-import requests
 import pandas as pd
 import numpy as np
+import requests
 import time
-import datetime
+from datetime import datetime, timedelta
+import pytz
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import plotly.express as px
 import plotly.graph_objects as go
-from wordcloud import WordCloud
-import matplotlib.pyplot as plt
 
-def get_unixtime_from_datetime(dt):
-    return int(time.mktime(dt.timetuple()))
+# Константы
+MAX_POSTS_PER_REQUEST = 200
+DEFAULT_TIME_STEP = timedelta(hours=24)
+MAX_RETRIES = 3
+DEFAULT_PAUSE = 5
+MAX_PAUSE = 10
 
-def get_comments(post_id, owner_id, access_token):
-    url = (
-        f"https://api.vk.com/method/wall.getComments?"
-        f"owner_id={owner_id}&post_id={post_id}&access_token={access_token}&v=5.131"
-    )
-    try:
-        res = requests.get(url)
-        json_text = res.json()
-        if 'error' in json_text:
-            if json_text['error']['error_code'] == 6:
-                raise Exception("Too many requests per second")
-            else:
-                raise Exception(f"API Error: {json_text['error']['error_msg']}")
-        return json_text.get('response', {}).get('items', [])
-    except Exception as e:
-        st.error(f"Ошибка при получении комментариев: {e}")
-        return []
-
-def execute_query(query, start_time, end_time, access_token, include_comments, search_mode):
-    url = (
-        f"https://api.vk.com/method/newsfeed.search?q={query}"
-        f"&count=200"
-        f"&access_token={access_token}"
-        f"&start_time={start_time}"
-        f"&end_time={end_time}"
-        f"&v=5.131"
-    )
-
-    posts = []
-    comments = []
-
-    try:
-        res = requests.get(url)
-        json_text = res.json()
-        if 'error' in json_text:
-            if json_text['error']['error_code'] == 6:
-                raise Exception("Too many requests per second")
-            else:
-                raise Exception(f"API Error: {json_text['error']['error_msg']}")
-
-        if 'response' in json_text and 'items' in json_text['response']:
-            for item in json_text['response']['items']:
-                if search_mode == 'exact':
-                    if re.search(r'\b' + re.escape(query) + r'\b', item.get('text', ''), re.IGNORECASE):
-                        item['matched_query'] = query
-                        posts.append(item)
-                else:
-                    if query.lower() in item.get('text', '').lower():
-                        item['matched_query'] = query
-                        posts.append(item)
-
-                if include_comments:
-                    post_comments = get_comments(item['id'], item['owner_id'], access_token)
-                    for comment in post_comments:
-                        comment['post_id'] = item['id']
-                        comment['post_owner_id'] = item['owner_id']
-                    comments.extend(post_comments)
-
-    except Exception as e:
-        st.error(f"Ошибка при выполнении запроса: {e}")
-
-    return posts, comments
-
-def get_vk_newsfeed(queries, start_datetime, end_datetime, access_tokens, include_comments, progress_bar, status_text, time_sleep, search_mode, time_step, search_logic):
-    all_posts = []
-    all_comments = []
-
-    delta = datetime.timedelta(hours=time_step)
-    current_time = start_datetime
-
-    total_steps = int((end_datetime - start_datetime) / delta)
-    step_count = 0
-
-    start_time = time.time()
-
-    with ThreadPoolExecutor(max_workers=len(access_tokens)) as executor:
-        while current_time < end_datetime:
-            step_count += 1
-            futures = []
-            for query in queries:
-                end_time = min(current_time + delta, end_datetime)
-                token = access_tokens[step_count % len(access_tokens)]
-                futures.append(executor.submit(
-                    execute_query, 
-                    query, 
-                    get_unixtime_from_datetime(current_time),
-                    get_unixtime_from_datetime(end_time),
-                    token, 
-                    include_comments, 
-                    search_mode
-                ))
-
-            for future in as_completed(futures):
-                try:
-                    posts, comments = future.result()
-                    if search_logic == 'AND':
-                        matching_posts = [post for post in posts if all(q.lower() in post.get('text', '').lower() for q in queries)]
-                    else:  # 'OR'
-                        matching_posts = posts
-                    all_posts.extend(matching_posts)
-                    all_comments.extend(comments)
-                except Exception as e:
-                    st.error(f"Ошибка при обработке запроса: {e}")
-                    if "Too many requests per second" in str(e):
-                        st.warning("Внимание: слишком много запросов. Попробуйте увеличить паузу между запросами или добавить больше API ключей.")
-
-            progress = step_count / total_steps
-            progress_bar.progress(progress)
-
-            elapsed_time = time.time() - start_time
-            eta = (elapsed_time / progress) - elapsed_time if progress > 0 else 0
-
-            status_text.text(
-                f"⏳ Прогресс: {progress:.2%} | ⌛ Прошло времени: {elapsed_time:.1f} сек\n"
-                f"📊 Найдено постов: {len(all_posts)} | 💬 Комментариев: {len(all_comments)}\n"
-                f"🕒 Текущая дата: {current_time} | ⏱️ Осталось примерно: {eta/60:.1f} мин"
-            )
-
-            current_time += delta
-            time.sleep(time_sleep)
-
-    df = pd.DataFrame(all_posts)
-    comments_df = pd.DataFrame(all_comments)
-
-    return df, comments_df
-
-def main():
-    st.set_page_config(page_title="VK Parser", page_icon="📊", layout="wide")
-
-    st.title("📊 VK Парсер новостей и комментариев")
-
-    with st.expander("ℹ️ Инструкция по использованию"):
-        st.markdown("""
-        1. 🔑 **Получите токен VK API**:
-           - Перейдите на [vkhost.github.io](https://vkhost.github.io/)
-           - Нажмите "Настройки", выберите "Стена" и "Доступ в любое время"
-           - Нажмите "Получить" и разрешите доступ
-           - Скопируйте токен из URL (между `access_token=` и `&expires_in=`)
-        
-        2. 📝 **Введите поисковые запросы**:
-           - Каждый запрос с новой строки
-           - Для точного поиска фразы, заключите её в кавычки, например: "искусственный интеллект"
-           - Для поиска по отдельным словам, просто введите их, например: новости технологии
-        
-        3. 📅 **Выберите период поиска**:
-           - Укажите начальную и конечную даты и время
-           - Помните, что чем больше период, тем дольше будет выполняться парсинг
-        
-        4. 🔍 **Настройте параметры поиска**:
-           - Выберите режим поиска (точная фраза или частичное совпадение)
-           - Укажите, нужно ли включать комментарии (это может значительно увеличить время парсинга)
-           - Установите шаг парсинга (в часах). Меньший шаг даёт более точные результаты, но увеличивает время работы
-           - Выберите логику поиска (И/ИЛИ) для нескольких запросов
-        
-        5. ⚙️ **Настройте API ключи**:
-           - Добавьте один или несколько API ключей
-           - Использование нескольких ключей позволяет распределить нагрузку и уменьшить риск блокировки
-        
-        6. 🚀 **Запустите парсинг**:
-           - Нажмите кнопку "Начать парсинг"
-           - Следите за прогрессом в статус-баре
-        
-        7. 📊 **Анализируйте результаты**:
-           - Просматривайте общую статистику на вкладке "Обзор"
-           - Изучайте графики распределения постов по времени
-           - Просматривайте детальные данные в таблицах "Посты" и "Комментарии"
-           - Используйте фильтры и сортировку для анализа данных
-           - Загрузите результаты в CSV формате для дальнейшего анализа
-        
-        ⚠️ **Важно**: 
-        - VK API ограничивает количество запросов. Рекомендуется устанавливать паузу между запросами не менее 0.5 секунд.
-        - Для больших объемов данных рекомендуется использовать несколько API ключей и увеличивать паузу между запросами.
-        - При парсинге больших периодов рекомендуется разбивать задачу на несколько меньших периодов.
-        
-        🔧 **Технические особенности**:
-        - Приложение разработано с использованием Python и Streamlit
-        - Для работы с API VK используется библиотека requests
-        - Многопоточность реализована с помощью concurrent.futures
-        - Графики строятся с использованием библиотеки Plotly
-        
-        💡 **Советы по выгрузке больших периодов**:
-        - Используйте несколько API ключей для распределения нагрузки
-        - Увеличьте паузу между запросами до 1-2 секунд
-        - Разбивайте большие периоды на несколько меньших (например, по месяцам)
-        - Выбирайте оптимальный шаг парсинга (например, 6 или 12 часов для длительных периодов)
-        - Запускайте парсинг в нерабочее время, когда нагрузка на API VK меньше
-        """)
-
-    access_tokens = st.text_area("🔑 Введите ваши токены доступа VK API (по одному на строку):", height=100).split('\n')
-    access_tokens = [token.strip() for token in access_tokens if token.strip()]
-
-    queries = st.text_area("📝 Введите поисковые запросы (каждый с новой строки):")
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        start_date = st.date_input("📅 Дата начала:")
-    with col2:
-        start_time = st.time_input("🕒 Время начала:")
-    with col3:
-        end_date = st.date_input("📅 Дата окончания:")
-    with col4:
-        end_time = st.time_input("🕒 Время окончания:")
+# Функция для выполнения запроса к API VK
+def execute_query(api_key, owner_id, query, start_time, end_time, search_mode):
+    params = {
+        "access_token": api_key,
+        "v": "5.131",
+        "owner_id": owner_id,
+        "query": query,
+        "count": MAX_POSTS_PER_REQUEST,
+        "start_time": start_time,
+        "end_time": end_time,
+    }
     
-    start_datetime = datetime.datetime.combine(start_date, start_time)
-    end_datetime = datetime.datetime.combine(end_date, end_time)
+    if search_mode == "Точная фраза":
+        params["search_own"] = 1
     
-    include_comments = st.checkbox("💬 Включить комментарии", value=True)
-    time_sleep = st.slider("⏱️ Пауза между запросами (секунды)", min_value=0.5, max_value=10.0, value=5.0, step=0.1)
-
-    search_mode = st.radio("🔍 Режим поиска:", ["Точная фраза", "Частичное совпадение"])
-    search_logic = st.radio("🧠 Логика поиска для нескольких запросов:", ["И", "ИЛИ"])
+    response = requests.get("https://api.vk.com/method/wall.search", params=params)
+    data = response.json()
     
-    time_step = st.slider("📊 Шаг парсинга (часы)", min_value=1, max_value=24, value=1, step=1)
-    
-    if 'full_df' not in st.session_state:
-        st.session_state.full_df = None
-    if 'comments_df' not in st.session_state:
-        st.session_state.comments_df = None
-
-    start_parsing = st.button("🚀 Начать парсинг")
-
-    if start_parsing:
-        if not access_tokens or not queries or not start_date or not end_date:
-            st.error("Пожалуйста, заполните все поля.")
-            return
-
-        if (end_datetime - start_datetime).total_seconds() < 3600:
-            st.error("Минимальный период парсинга должен быть не менее 1 часа.")
-            return
-
-        queries_list = [q.strip() for q in queries.split('\n') if q.strip()]
-
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-
-        status_text.text("Парсинг начался...")
-        df, comments_df = get_vk_newsfeed(queries_list, start_datetime, end_datetime, 
-                                          access_tokens, include_comments, progress_bar, status_text, time_sleep,
-                                          'exact' if search_mode == "Точная фраза" else 'partial', time_step,
-                                          'AND' if search_logic == "И" else 'OR')
-        status_text.text("Парсинг завершен!")
-
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'], unit='s')
-            
-            columns_order = ['matched_query', 'text', 'date', 'id', 'owner_id', 'from_id', 'likes', 'reposts', 'views', 'comments']
-            df = df.reindex(columns=columns_order + [col for col in df.columns if col not in columns_order])
-
-            st.session_state.full_df = df
-            st.session_state.comments_df = comments_df
+    if "error" in data:
+        if data["error"]["error_code"] == 6:
+            raise Exception("API key is temporarily banned due to too many requests")
         else:
-            st.warning("Данные не найдены для указанных параметров.")
+            raise Exception(f"API Error: {data['error']['error_msg']}")
+    
+    return data.get("response", {}).get("items", [])
 
-    if st.session_state.full_df is not None:
-        st.subheader("📊 Результаты парсинга")
+# Функция для получения комментариев к посту
+def get_comments(api_key, owner_id, post_id):
+    params = {
+        "access_token": api_key,
+        "v": "5.131",
+        "owner_id": owner_id,
+        "post_id": post_id,
+        "count": 200,
+        "sort": "asc",
+        "extended": 1,
+    }
+    
+    response = requests.get("https://api.vk.com/method/wall.getComments", params=params)
+    data = response.json()
+    
+    if "error" in data:
+        if data["error"]["error_code"] == 6:
+            raise Exception("API key is temporarily banned due to too many requests")
+        else:
+            raise Exception(f"API Error: {data['error']['error_msg']}")
+    
+    return data.get("response", {}).get("items", [])
+
+# Функция для обработки постов
+def process_posts(api_keys, owner_id, queries, start_date, end_date, search_mode, time_step, pause):
+    start_time = int(start_date.timestamp())
+    end_time = int(end_date.timestamp())
+    current_time = start_time
+    all_posts = []
+    total_requests = 0
+    api_key_index = 0
+
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    start_process_time = time.time()
+
+    while current_time < end_time:
+        next_time = min(current_time + int(time_step.total_seconds()), end_time)
         
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 Обзор", "📝 Посты", "💬 Комментарии", "🔍 Детальный просмотр"])
-        
-        with tab1:
-            st.subheader("Общая статистика")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Всего постов", len(st.session_state.full_df))
-            with col2:
-                st.metric("Всего комментариев", len(st.session_state.comments_df))
-            with col3:
-                st.metric("Уникальных авторов", st.session_state.full_df['from_id'].nunique())
-
-            st.subheader("Распределение постов по времени")
-            time_grouping = st.selectbox("Группировать по:", ["Часам", "12 часам", "Дням", "Неделям"])
-            
-            if time_grouping == "Часам":
-                df_grouped = st.session_state.full_df.groupby(st.session_state.full_df['date'].dt.floor('H')).size().reset_index(name='count')
-            elif time_grouping == "12 часам":
-                df_grouped = st.session_state.full_df.groupby(st.session_state.full_df['date'].dt.floor('12H')).size().reset_index(name='count')
-            elif time_grouping == "Дням":
-                df_grouped = st.session_state.full_df.groupby(st.session_state.full_df['date'].dt.date).size().reset_index(name='count')
-            else:  # Неделям
-                df_grouped = st.session_state.full_df.groupby(st.session_state.full_df['date'].dt.to_period('W')).size().reset_index(name='count')
-                df_grouped['date'] = df_grouped['date'].dt.start_time
-
-            fig = px.bar(df_grouped, x='date', y='count', title=f"Количество постов по {time_grouping.lower()}")
-            st.plotly_chart(fig)
-
-            st.subheader("Топ авторов")
-            top_authors = st.session_state.full_df['from_id'].value_counts().head(10)
-            fig = px.bar(x=top_authors.index, y=top_authors.values, labels={'x': 'ID автора', 'y': 'Количество постов'})
-            fig.update_layout(title="Топ-10 авторов по количеству постов")
-            st.plotly_chart(fig)
-
-            st.subheader("Облако тегов")
+        for query in queries:
             try:
-                text = " ".join(review for review in st.session_state.full_df.text)
-                wordcloud = WordCloud(width=800, height=400, background_color='white').generate(text)
-                fig, ax = plt.subplots(figsize=(10, 5))
-                ax.imshow(wordcloud, interpolation='bilinear')
-                ax.axis('off')
-                st.pyplot(fig)
-            except ImportError:
-                st.warning("Библиотека wordcloud не установлена. Облако тегов недоступно.")
+                posts = execute_query(api_keys[api_key_index], owner_id, query, current_time, next_time, search_mode)
+                all_posts.extend(posts)
+                total_requests += 1
+                
+                # Переключение на следующий API ключ
+                api_key_index = (api_key_index + 1) % len(api_keys)
+                
+                time.sleep(pause)
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
+                if "API key is temporarily banned" in str(e):
+                    st.warning(f"API key {api_keys[api_key_index]} is temporarily banned. Switching to the next key.")
+                    api_key_index = (api_key_index + 1) % len(api_keys)
+                    if api_key_index == 0:
+                        st.error("All API keys are banned. Please wait and try again later.")
+                        return []
+                else:
+                    return []
 
-        with tab2:
-            st.dataframe(st.session_state.full_df)
-            csv = st.session_state.full_df.to_csv(index=False).encode('utf-8')
+        progress = (current_time - start_time) / (end_time - start_time)
+        progress_bar.progress(progress)
+        
+        elapsed_time = time.time() - start_process_time
+        estimated_total_time = elapsed_time / progress if progress > 0 else 0
+        remaining_time = estimated_total_time - elapsed_time
+        
+        status_text.text(f"Прогресс: {progress:.2%}. Прошло времени: {timedelta(seconds=int(elapsed_time))}. Осталось примерно: {timedelta(seconds=int(remaining_time))}. Всего запросов: {total_requests}")
+        
+        current_time = next_time
+
+    progress_bar.progress(1.0)
+    status_text.text(f"Выполнено! Всего запросов: {total_requests}. Общее время: {timedelta(seconds=int(time.time() - start_process_time))}")
+
+    return all_posts
+
+# Функция для форматирования даты и времени
+def format_datetime(timestamp):
+    return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+
+# Функция для создания графика
+def create_chart(df, group_by):
+    if group_by == 'hour':
+        df['grouped_time'] = df['date'].dt.floor('H')
+    elif group_by == 'day':
+        df['grouped_time'] = df['date'].dt.floor('D')
+    elif group_by == 'week':
+        df['grouped_time'] = df['date'].dt.to_period('W').apply(lambda r: r.start_time)
+    elif group_by == 'month':
+        df['grouped_time'] = df['date'].dt.to_period('M').apply(lambda r: r.start_time)
+    
+    grouped_data = df.groupby('grouped_time').size().reset_index(name='count')
+    
+    fig = go.Figure(data=[go.Bar(x=grouped_data['grouped_time'], y=grouped_data['count'])])
+    fig.update_layout(title='Количество постов по времени',
+                      xaxis_title='Время',
+                      yaxis_title='Количество постов')
+    return fig
+
+# Основная функция приложения
+def main():
+    st.set_page_config(page_title="VK News Scraper", page_icon="📰", layout="wide")
+    st.title("VK News Scraper")
+
+    # Создаем вкладки
+    tabs = st.tabs(["Статистика", "Настройки", "Результаты"])
+
+    with tabs[0]:
+        st.header("Статистика и график")
+        if 'df' in st.session_state and not st.session_state.df.empty:
+            st.write(f"Всего постов: {len(st.session_state.df)}")
+            st.write(f"Уникальных авторов: {st.session_state.df['from_id'].nunique()}")
+            st.write(f"Период: с {st.session_state.df['date'].min()} по {st.session_state.df['date'].max()}")
+            
+            group_by = st.selectbox("Группировать по:", ['hour', 'day', 'week', 'month'])
+            chart = create_chart(st.session_state.df, group_by)
+            st.plotly_chart(chart)
+        else:
+            st.info("Запустите поиск, чтобы увидеть статистику и график.")
+
+    with tabs[1]:
+        st.header("Настройки")
+
+        # Инструкция
+        with st.expander("Инструкция"):
+            st.markdown("""
+            1. Введите ID сообщества (например, -1 для группы ВКонтакте).
+            2. Введите один или несколько API ключей VK.
+            3. Введите ключевые слова или фразы для поиска, разделяя их запятыми.
+            4. Выберите режим поиска: "Точная фраза" или "Частичное совпадение".
+            5. Укажите начальную и конечную даты для поиска.
+            6. Настройте параметры времени выполнения и паузы между запросами.
+            7. Нажмите "Начать поиск" для запуска процесса.
+            8. После завершения поиска вы сможете просмотреть результаты и статистику.
+
+            ### Рекомендации по выбору паузы между запросами:
+            - Начните с 5 секунд и увеличивайте, если возникают проблемы с блокировкой.
+            - При использовании нескольких API ключей можно установить меньшую паузу.
+            - Следите за сообщениями о блокировке и корректируйте паузу при необходимости.
+            """)
+
+        # Технические особенности и советы
+        with st.expander("Технические особенности и советы"):
+            st.markdown("""
+            ### Технические особенности:
+            - Приложение использует API VK для поиска постов и комментариев.
+            - Реализовано многопоточное выполнение запросов для оптимизации скорости.
+            - Используется библиотека Streamlit для создания пользовательского интерфейса.
+            - Данные обрабатываются с помощью pandas и numpy.
+            - Графики создаются с использованием plotly.
+
+            ### Советы по выгрузке больших периодов:
+            1. Используйте несколько API ключей для распределения нагрузки.
+            2. Увеличьте паузу между запросами, чтобы избежать блокировки.
+            3. Разбивайте большие периоды на несколько меньших запросов.
+            4. Используйте режим "Частичное совпадение" для более быстрого поиска.
+            5. Оптимизируйте ключевые слова для более точного поиска.
+            6. Регулярно сохраняйте промежуточные результаты.
+            7. Мониторьте процесс выполнения и корректируйте параметры при необходимости.
+            """)
+
+        # Ввод параметров
+        owner_id = st.text_input("ID сообщества (например, -1 для группы ВКонтакте)")
+        
+        api_keys = []
+        api_key = st.text_input("API ключ VK", key="api_key_0")
+        api_keys.append(api_key)
+        
+        num_extra_keys = st.session_state.get('num_extra_keys', 0)
+        
+        for i in range(num_extra_keys):
+            extra_key = st.text_input(f"Дополнительный API ключ VK #{i+1}", key=f"api_key_{i+1}")
+            api_keys.append(extra_key)
+        
+        if st.button("Добавить еще один API ключ"):
+            st.session_state.num_extra_keys = num_extra_keys + 1
+            st.experimental_rerun()
+        
+        queries = st.text_area("Ключевые слова или фразы (разделите запятыми)")
+        search_mode = st.radio("Режим поиска", ["Точная фраза", "Частичное совпадение"])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Начальная дата")
+            start_time = st.time_input("Начальное время", value=datetime.min.time())
+        with col2:
+            end_date = st.date_input("Конечная дата")
+            end_time = st.time_input("Конечное время", value=datetime.max.time())
+        
+        start_datetime = datetime.combine(start_date, start_time)
+        end_datetime = datetime.combine(end_date, end_time)
+        
+        time_step = st.slider("Шаг времени (часы)", 1, 168, 24)
+        pause = st.slider("Пауза между запросами (секунды)", 1, MAX_PAUSE, DEFAULT_PAUSE)
+
+        if st.button("Начать поиск"):
+            if not owner_id or not api_keys[0] or not queries:
+                st.error("Пожалуйста, заполните все обязательные поля.")
+            else:
+                with st.spinner("Выполняется поиск..."):
+                    queries_list = [q.strip() for q in queries.split(',')]
+                    posts = process_posts(api_keys, owner_id, queries_list, start_datetime, end_datetime, search_mode, timedelta(hours=time_step), pause)
+                    
+                    if posts:
+                        df = pd.DataFrame(posts)
+                        df['date'] = pd.to_datetime(df['date'], unit='s')
+                        df['text'] = df['text'].fillna('')
+                        
+                        st.session_state.df = df
+                        st.success(f"Найдено {len(posts)} постов.")
+                    else:
+                        st.warning("Посты не найдены.")
+
+    with tabs[2]:
+        st.header("Результаты")
+        if 'df' in st.session_state and not st.session_state.df.empty:
+            st.write(st.session_state.df)
+            
+            # Добавляем возможность сортировки
+            sort_column = st.selectbox("Сортировать по:", st.session_state.df.columns)
+            sort_order = st.radio("Порядок сортировки:", ["По возрастанию", "По убыванию"])
+            
+            sorted_df = st.session_state.df.sort_values(by=sort_column, ascending=(sort_order == "По возрастанию"))
+            
+            # Отображаем посты и комментарии
+            for _, row in sorted_df.iterrows():
+                st.subheader(f"Пост от {row['date']}")
+                st.write(row['text'])
+                st.write(f"Лайки: {row['likes']['count']}, Репосты: {row['reposts']['count']}, Просмотры: {row.get('views', {}).get('count', 'N/A')}")
+                
+                if st.button(f"Показать комментарии для поста {row['id']}"):
+                    comments = get_comments(api_keys[0], owner_id, row['id'])
+                    if comments:
+                        st.write("Комментарии:")
+                        for comment in comments:
+                            st.text(f"{comment['from_id']} ({format_datetime(comment['date'])}): {comment['text']}")
+                    else:
+                        st.info("Комментарии отсутствуют или недоступны.")
+            
+            # Добавляем возможность выгрузки данных
+            csv = sorted_df.to_csv(index=False)
             st.download_button(
-                label="📥 Скачать посты (CSV)",
+                label="Скачать данные как CSV",
                 data=csv,
                 file_name="vk_posts.csv",
                 mime="text/csv",
             )
-        
-        with tab3:
-            if include_comments and not st.session_state.comments_df.empty:
-                st.dataframe(st.session_state.comments_df)
-                comments_csv = st.session_state.comments_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Скачать комментарии (CSV)",
-                    data=comments_csv,
-                    file_name="vk_comments.csv",
-                    mime="text/csv",
-                )
-            else:
-                st.info("Комментарии не были включены в парсинг или не найдены.")
-
-        with tab4:
-            st.subheader("Детальный просмотр постов и комментариев")
-            sort_option = st.selectbox("Сортировать по:", ["Дате (сначала новые)", "Дате (сначала старые)", "Количеству лайков", "Количеству комментариев"])
-            
-            if sort_option == "Дате (сначала новые)":
-                sorted_df = st.session_state.full_df.sort_values('date', ascending=False)
-            elif sort_option == "Дате (сначала старые)":
-                sorted_df = st.session_state.full_df.sort_values('date')
-            elif sort_option == "Количеству лайков":
-                sorted_df = st.session_state.full_df.sort_values('likes', ascending=False)
-            else:
-                sorted_df = st.session_state.full_df.sort_values('comments', ascending=False)
-
-            for _, post in sorted_df.iterrows():
-                with st.expander(f"Пост от {post['date']} | 👍 {post['likes']} | 💬 {post['comments']}"):
-                    st.write(f"**Текст:** {post['text']}")
-                    st.write(f"**Автор:** {post['from_id']}")
-                    st.write(f"**Ссылка:** https://vk.com/wall{post['owner_id']}_{post['id']}")
-                    
-                    if include_comments:
-                        post_comments = st.session_state.comments_df[st.session_state.comments_df['post_id'] == post['id']]
-                        if not post_comments.empty:
-                            st.write("**Комментарии:**")
-                            for _, comment in post_comments.iterrows():
-                                st.write(f"- {comment['text']} (от {comment['from_id']})")
-
-    st.markdown("---")
-    st.markdown("Автор: [https://t.me/yourai](https://t.me/yourai)")
+        else:
+            st.info("Запустите поиск, чтобы увидеть результаты.")
 
 if __name__ == "__main__":
     main()
