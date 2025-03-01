@@ -100,26 +100,28 @@ def search_news(api_keys, owner_id, query, start_date, end_date, search_mode, ti
     all_posts = []
     total_intervals = (end_time - start_time) // time_step
     
-    with st.progress(0) as progress_bar:
-        start_time_progress = time.time()
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_interval = {executor.submit(process_time_interval, api_keys, owner_id, query, 
-                                                  interval_start, min(interval_start + time_step, end_time),
-                                                  search_mode): interval_start 
-                                  for interval_start in range(start_time, end_time, time_step)}
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    start_time_progress = time.time()
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_interval = {executor.submit(process_time_interval, api_keys, owner_id, query, 
+                                              interval_start, min(interval_start + time_step, end_time),
+                                              search_mode): interval_start 
+                              for interval_start in range(start_time, end_time, time_step)}
+        
+        for i, future in enumerate(as_completed(future_to_interval)):
+            all_posts.extend(future.result())
+            progress = (i + 1) / total_intervals
+            progress_bar.progress(progress)
             
-            for i, future in enumerate(as_completed(future_to_interval)):
-                all_posts.extend(future.result())
-                progress = (i + 1) / total_intervals
-                progress_bar.progress(progress)
-                
-                elapsed_time = time.time() - start_time_progress
-                estimated_total_time = elapsed_time / progress if progress > 0 else 0
-                remaining_time = estimated_total_time - elapsed_time
-                
-                st.write(f"Прогресс: {progress:.2%} | "
-                         f"Прошло времени: {timedelta(seconds=int(elapsed_time))} | "
-                         f"Осталось примерно: {timedelta(seconds=int(remaining_time))}")
+            elapsed_time = time.time() - start_time_progress
+            estimated_total_time = elapsed_time / progress if progress > 0 else 0
+            remaining_time = estimated_total_time - elapsed_time
+            
+            status_text.text(f"Прогресс: {progress:.2%} | "
+                     f"Прошло времени: {timedelta(seconds=int(elapsed_time))} | "
+                     f"Осталось примерно: {timedelta(seconds=int(remaining_time))}")
 
     return all_posts
 
@@ -130,46 +132,14 @@ def format_datetime(timestamp):
 # Streamlit интерфейс
 st.title('VK News Scraper')
 
-# Многоязычная поддержка
-language = st.selectbox('Выберите язык / Select language', ['Русский', 'English'])
-
-if language == 'Русский':
-    instructions = """
-    Инструкции по получению API ключа VK:
-    1. Перейдите на страницу https://vk.com/apps?act=manage
-    2. Нажмите "Создать приложение"
-    3. Выберите тип приложения "Standalone"
-    4. После создания приложения перейдите в его настройки
-    5. Скопируйте "Сервисный ключ доступа" и вставьте его ниже
-    """
-    owner_id_label = 'ID владельца страницы или группы (используйте "-" для групп)'
-    query_label = 'Поисковый запрос'
-    start_date_label = 'Начальная дата'
-    end_date_label = 'Конечная дата'
-    search_mode_label = 'Режим поиска'
-    time_step_label = 'Шаг времени (в секундах)'
-    search_button = 'Поиск'
-    exact_match = 'Точное совпадение'
-    partial_match = 'Частичное совпадение'
-else:
-    instructions = """
-    Instructions for obtaining VK API key:
-    1. Go to https://vk.com/apps?act=manage
-    2. Click "Create application"
-    3. Choose application type "Standalone"
-    4. After creating the application, go to its settings
-    5. Copy the "Service access key" and paste it below
-    """
-    owner_id_label = 'Owner ID (use "-" for groups)'
-    query_label = 'Search query'
-    start_date_label = 'Start date'
-    end_date_label = 'End date'
-    search_mode_label = 'Search mode'
-    time_step_label = 'Time step (in seconds)'
-    search_button = 'Search'
-    exact_match = 'Exact match'
-    partial_match = 'Partial match'
-
+instructions = """
+Инструкции по получению API ключа VK:
+1. Перейдите на страницу https://vk.com/apps?act=manage
+2. Нажмите "Создать приложение"
+3. Выберите тип приложения "Standalone"
+4. После создания приложения перейдите в его настройки
+5. Скопируйте "Сервисный ключ доступа" и вставьте его ниже
+"""
 st.write(instructions)
 
 # Ввод API ключей
@@ -184,24 +154,24 @@ if not valid_api_keys:
 else:
     st.success(f"Найдено {len(valid_api_keys)} действительных API ключей.")
 
-    owner_id = st.text_input(owner_id_label)
-    query = st.text_input(query_label)
+    owner_id = st.text_input('ID владельца страницы или группы (используйте "-" для групп)')
+    query = st.text_input('Поисковый запрос')
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(start_date_label)
-        start_time = st.time_input(f"{start_date_label} (время)")
+        start_date = st.date_input('Начальная дата')
+        start_time = st.time_input('Начальное время')
     with col2:
-        end_date = st.date_input(end_date_label)
-        end_time = st.time_input(f"{end_date_label} (время)")
+        end_date = st.date_input('Конечная дата')
+        end_time = st.time_input('Конечное время')
     
-    search_mode = st.radio(search_mode_label, [exact_match, partial_match])
-    time_step = st.number_input(time_step_label, value=86400, step=3600)
+    search_mode = st.radio('Режим поиска', ['Точное совпадение', 'Частичное совпадение'])
+    time_step = st.number_input('Шаг времени (в секундах)', value=86400, step=3600)
 
-    if st.button(search_button):
+    if st.button('Поиск'):
         start_datetime = datetime.combine(start_date, start_time)
         end_datetime = datetime.combine(end_date, end_time)
         
-        search_mode = 'exact' if search_mode == exact_match else 'partial'
+        search_mode = 'exact' if search_mode == 'Точное совпадение' else 'partial'
         
         posts = search_news(valid_api_keys, owner_id, query, start_datetime, end_datetime, search_mode, time_step)
         
